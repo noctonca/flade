@@ -3,6 +3,7 @@
 /* flade - movie format detection and dispatch. */
 #include "movie.h"
 #include "fla.h"
+#include "acf.h"
 
 #include <string.h>
 
@@ -14,6 +15,9 @@ int movie_open(movie_t *m, const uint8_t *data, size_t size, const char *name) {
     if (size >= 4 && memcmp(data, "V1.3", 4) == 0)
         return fla_movie_open(m, data, size);
 
-    /* ACF (XCF) detection lands in the next commit. */
+    /* ACF/XCF: the file begins with the "FrameLen" chunk tag. */
+    if (size >= 8 && memcmp(data, "FrameLen", 8) == 0)
+        return acf_movie_open(m, data, size);
+
     return -1;
 }

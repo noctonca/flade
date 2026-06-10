@@ -192,6 +192,61 @@ int iso_list(iso9660_t *iso, const char *dirpath, iso_list_cb cb, void *ud) {
     return 0;
 }
 
+#define ISO_PATH_MAX 1024
+
+static void walk_dir(iso9660_t *iso, uint32_t dlba, uint32_t dlen, char *path,
+                     size_t pathlen, int depth, iso_walk_cb cb, void *ud) {
+    if (depth > 8)
+        return;
+    uint8_t *buf = read_extent(iso, dlba, dlen);
+    if (!buf)
+        return;
+    uint32_t o = 0;
+    while (o < dlen) {
+        uint8_t rl = buf[o];
+        if (rl == 0) {
+            o = ((o / 2048) + 1) * 2048;
+            continue;
+        }
+        uint32_t elba = rd32(buf + o + 2);
+        uint32_t elen = rd32(buf + o + 10);
+        uint8_t flags = buf[o + 25];
+        uint8_t nlen = buf[o + 32];
+        const uint8_t *nm = buf + o + 33;
+        if (nlen > 1) { /* skip the '.' and '..' self/parent entries */
+            char name[256];
+            int n = 0;
+            for (int i = 0; i < nlen && nm[i] != ';' && n < 255; i++)
+                name[n++] = (char)nm[i];
+            name[n] = 0;
+            size_t cur = pathlen;
+            if (cur + 1 + (size_t)n < ISO_PATH_MAX) {
+                path[cur] = '/';
+                memcpy(path + cur + 1, name, (size_t)n + 1);
+                if (flags & 0x02)
+                    walk_dir(iso, elba, elen, path, cur + 1 + n, depth + 1, cb, ud);
+                else
+                    cb(ud, path, elen);
+                path[cur] = 0;
+            }
+        }
+        o += rl;
+    }
+    free(buf);
+}
+
+int iso_walk(iso9660_t *iso, iso_walk_cb cb, void *ud) {
+    uint8_t s[2048];
+    if (read_sector(iso, 16, s) != 0)
+        return -1;
+    uint32_t lba = rd32(s + 156 + 2);
+    uint32_t len = rd32(s + 156 + 10);
+    char path[ISO_PATH_MAX];
+    path[0] = 0;
+    walk_dir(iso, lba, len, path, 0, 0, cb, ud);
+    return 0;
+}
+
 int iso_read(iso9660_t *iso, const char *filepath, uint8_t **out, size_t *outsize) {
     uint32_t lba, len;
     if (resolve(iso, filepath, 0, &lba, &len) != 0)

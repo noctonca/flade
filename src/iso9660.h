@@ -21,6 +21,11 @@ void iso_close(iso9660_t *iso);
 typedef void (*iso_list_cb)(void *ud, const char *name, uint32_t size);
 int iso_list(iso9660_t *iso, const char *dirpath, iso_list_cb cb, void *ud);
 
+/* Recursively visit every regular file in the image, reporting each as a full
+ * '/'-rooted path (version suffixes stripped, e.g. "/SEQUENCE/BIGINTRO.ACF"). */
+typedef void (*iso_walk_cb)(void *ud, const char *path, uint32_t size);
+int iso_walk(iso9660_t *iso, iso_walk_cb cb, void *ud);
+
 /* Read a file by path (e.g. "LBA/FLA/INTROD.FLA") into a freshly malloc'd
  * buffer. Caller frees *out. Returns 0 on success. */
 int iso_read(iso9660_t *iso, const char *filepath, uint8_t **out, size_t *outsize);

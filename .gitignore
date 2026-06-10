@@ -18,3 +18,6 @@ compile_commands.json
 
 # Windows "downloaded from the internet" alternate-data-stream markers
 *Zone.Identifier
+
+# fladump scratch output
+*.ppm

@@ -87,21 +87,61 @@ static uint8_t *read_file(const char *path, size_t *size) {
     return buf;
 }
 
-static void list_cb(void *ud, const char *name, uint32_t size) {
+static int ieq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++)
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b))
+            return 0;
+    return *a == *b;
+}
+
+static int is_movie_path(const char *path) {
+    size_t n = strlen(path);
+    return n >= 4 && (ieq(path + n - 4, ".FLA") || ieq(path + n - 4, ".ACF"));
+}
+
+static void list_walk_cb(void *ud, const char *path, uint32_t size) {
     (void)ud;
-    printf("  %-16s %9u bytes\n", name, size);
+    if (is_movie_path(path))
+        printf("  %-34s %9u bytes\n", path, size);
+}
+
+/* Resolve a bare movie name to its full in-image path. */
+typedef struct {
+    const char *want;
+    char found[1024];
+} find_ctx;
+
+static void find_walk_cb(void *ud, const char *path, uint32_t size) {
+    (void)size;
+    find_ctx *f = (find_ctx *)ud;
+    if (f->found[0] || !is_movie_path(path))
+        return;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    char stem[256];
+    size_t bn = strlen(base);
+    size_t sl = bn >= 4 ? bn - 4 : bn; /* basename without the .FLA/.ACF */
+    if (sl >= sizeof(stem))
+        sl = sizeof(stem) - 1;
+    memcpy(stem, base, sl);
+    stem[sl] = 0;
+    if (ieq(base, f->want) || ieq(stem, f->want))
+        snprintf(f->found, sizeof(f->found), "%s", path);
 }
 
 static void usage(void) {
-    printf("flade - Adeline movie player\n\n"
+    printf("flade - Adeline movie player (FLA + ACF)\n\n"
            "Usage:\n"
-           "  flade <movie.fla> [--flasamp FLASAMP.HQR] [options]\n"
-           "  flade --cd <LBA.DOT> <MOVIENAME> [options]\n"
-           "  flade --cd <LBA.DOT> --list\n\n"
+           "  flade <movie.fla|.acf> [options]\n"
+           "  flade --cd <image> <name | /path/in/image> [options]\n"
+           "  flade --cd <image> --list\n\n"
+           "Reads loose movie files or a raw MODE1/2352 CD image (LBA1 LBA.DOT,\n"
+           "Time Commando GAME.GOG, ...). With --cd, give a full in-image path such\n"
+           "as /SEQUENCE/BIGINTRO.ACF, or a bare name like INTROD to search the disc.\n\n"
            "Options:\n"
-           "  --cd <image>     read the movie (and samples) from a raw LBA1 CD image\n"
-           "  --flasamp <file> FLASAMP.HQR for a loose .fla (default: alongside it)\n"
-           "  --list           with --cd, list the movies in the image and exit\n"
+           "  --cd <image>     read the movie (and FLA samples) from a CD image\n"
+           "  --flasamp <file> FLASAMP.HQR for a loose FLA (default: alongside it)\n"
+           "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
            "  --volume <f>     master volume 0..1 (default 0.7)\n");
@@ -165,9 +205,8 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (do_list) {
-            printf("Movies in %s (LBA/FLA):\n", cd_path);
-            if (iso_list(iso, "LBA/FLA", list_cb, NULL) != 0)
-                fprintf(stderr, "flade: no LBA/FLA directory in image\n");
+            printf("Movies in %s:\n", cd_path);
+            iso_walk(iso, list_walk_cb, NULL);
             iso_close(iso);
             return 0;
         }
@@ -183,21 +222,32 @@ int main(int argc, char **argv) {
     /* ----- load the movie bytes ------------------------------------------- */
     uint8_t *movie_buf = NULL;
     size_t movie_size = 0;
+    char flasamp_in_image[1024] = {0}; /* FLASAMP.HQR beside an in-image FLA */
     if (iso) {
-        char name[64], path[128];
-        size_t k = 0;
-        for (const char *p = movie; *p && k < sizeof(name) - 1; p++)
-            if (*p != '.')
-                name[k++] = (char)toupper((unsigned char)*p);
-            else
-                break;
-        name[k] = 0;
-        snprintf(path, sizeof(path), "LBA/FLA/%s.FLA", name);
-        if (iso_read(iso, path, &movie_buf, &movie_size) != 0) {
-            fprintf(stderr, "flade: '%s' not found in image (try --list)\n", path);
+        char inpath[1024];
+        if (movie[0] == '/') {
+            snprintf(inpath, sizeof(inpath), "%s", movie + 1); /* strip leading '/' */
+        } else {
+            find_ctx fc;
+            fc.want = movie;
+            fc.found[0] = 0;
+            iso_walk(iso, find_walk_cb, &fc);
+            if (!fc.found[0]) {
+                fprintf(stderr, "flade: no movie matching '%s' in image (try --list)\n", movie);
+                iso_close(iso);
+                return 1;
+            }
+            snprintf(inpath, sizeof(inpath), "%s", fc.found + 1); /* strip leading '/' */
+        }
+        if (iso_read(iso, inpath, &movie_buf, &movie_size) != 0) {
+            fprintf(stderr, "flade: '/%s' not found in image\n", inpath);
             iso_close(iso);
             return 1;
         }
+        /* FLASAMP.HQR (FLA samples) lives in the same directory as the movie */
+        const char *sl = strrchr(inpath, '/');
+        size_t dl = sl ? (size_t)(sl - inpath) + 1 : 0;
+        snprintf(flasamp_in_image, sizeof(flasamp_in_image), "%.*sFLASAMP.HQR", (int)dl, inpath);
     } else {
         movie_buf = read_file(movie, &movie_size);
         if (!movie_buf) {
@@ -256,7 +306,7 @@ int main(int argc, char **argv) {
         size_t hqr_size = 0;
         int explicit_req = 0;
         if (iso) {
-            iso_read(iso, "LBA/FLA/FLASAMP.HQR", &hqr, &hqr_size);
+            iso_read(iso, flasamp_in_image, &hqr, &hqr_size);
         } else if (flasamp_path) {
             explicit_req = 1;
             hqr = read_file(flasamp_path, &hqr_size);

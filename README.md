@@ -1,12 +1,14 @@
 # flade
 
-A small standalone player for **Adeline FLA movies**, the full-motion cutscene
-format used by *Little Big Adventure 1* (1994), rendered with **SDL3** for
-video and audio.
+A small standalone player for **Adeline movies**, rendered with **SDL3**. It
+plays two of Adeline's cutscene formats:
 
-It decodes the FLA stream (palette / key-frame RLE / delta-frame patches),
-plays the VOC samples from `FLASAMP.HQR`, and can read everything straight out
-of a raw LBA1 CD image, with no extraction step needed.
+- **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects;
+- **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec (video only so far).
+
+It reads loose movie files or pulls them straight out of a raw CD image (LBA1
+`LBA.DOT`, Time Commando `GAME.GOG`), with no extraction step needed. ACF audio
+(embedded streaming PCM) is not wired up yet, so ACF plays silently for now.
 
 ## Building
 
@@ -25,21 +27,22 @@ cmake -B build -DCMAKE_PREFIX_PATH=/path/to/SDL3
 
 ## Playing
 
-From a raw LBA1 CD image (e.g. the retail `LBA.DOT`):
+From a raw CD image (LBA1 `LBA.DOT`, Time Commando `GAME.GOG`, ...):
 
 ```bash
-# list the movies inside the image
-./build/flade --cd /path/to/LBA.DOT --list
+# list the movies inside the image (.fla / .acf), with their paths
+./build/flade --cd /path/to/GAME.GOG --list
 
-# play one by name
-./build/flade --cd /path/to/LBA.DOT INTROD
+# play by full in-image path, or by a bare name searched on the disc
+./build/flade --cd /path/to/GAME.GOG /SEQUENCE/BIGINTRO.ACF
+./build/flade --cd /path/to/LBA.DOT  INTROD
 ```
 
-From a loose `.fla` file (with `FLASAMP.HQR` alongside it, or via `--flasamp`):
+From a loose movie file:
 
 ```bash
-./build/flade INTROD.FLA
-./build/flade INTROD.FLA --flasamp /path/to/FLASAMP.HQR
+./build/flade INTROD.FLA          # FLASAMP.HQR alongside it, or --flasamp
+./build/flade ACTIVISI.ACF
 ```
 
 Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`.
@@ -49,12 +52,14 @@ Keys: `Esc`/`Q` quit, `Space`/`Enter` skip, `F` fullscreen.
 
 | Module | Responsibility |
 |---|---|
-| `iso9660.c` | read a file/list a dir from a raw (2352) or cooked (2048) CD image |
-| `hqr.c` | HQR archive table + LZSS (`ExpandLZ`) expansion |
-| `voc.c` | Creative Voice File → signed-16 mono PCM |
-| `fla.c` | FLA header + per-frame opcode decode into an 8-bit indexed picture |
-| `audio.c` | SDL3 software mixer (resamples each VOC to the device rate) |
-| `main.c` | input source, window/texture, play loop, sample cues, scene fades |
+| `movie.c` | format detection + the generic decoder interface (`movie.h`) |
+| `fla.c` | FLA decoder (LBA1): palette / key-frame RLE / delta patches |
+| `acf.c` | ACF/XCF decoder (Time Commando): 64-opcode 8x8 tile codec |
+| `iso9660.c` | read / list / walk a raw (2352) or cooked (2048) CD image |
+| `hqr.c` | HQR archive table + LZSS/LZMIT (`ExpandLZ`) expansion |
+| `voc.c` | Creative Voice File → signed-16 mono PCM (FLA samples) |
+| `audio.c` | SDL3 software mixer (FLA sound-effect cues) |
+| `main.c` | input source, window/texture, generic play loop |
 
 ### FLA format, briefly
 
@@ -70,6 +75,16 @@ Opcode types (after the engine's `type-1` normalisation): `0` load palette,
 Frames are paced at `1000/(speed+1)` ms. Palettes are 6-bit VGA values stored
 pre-shifted into 8-bit, used directly (and bit-replicated up to full white).
 
+### ACF / XCF format, briefly
+
+A flat list of chunks (`tag[8]` + `size:u32` + payload): `FrameLen`, `Format`
+(320x200 or 320x240, fps), `Palette` (768-byte full 8-bit VGA), `KeyFrame` /
+`DltFrame`, plus `Sound*` / `Camera` / `Recouvre`. Each frame is a 320xH grid of
+8x8 tiles; a 6-bit opcode per tile (packed 4-per-3-bytes) selects one of 64
+decode routines (raw / fills / packed-index tiles / motion copies + sparse
+residual passes), double-buffered against the previous frame. Verified
+pixel-identical to the reference Python decoder across key and delta frames.
+
 ## Provenance & licence
 
 **GPL-2.0** (see `LICENSE`). flade adapts GPLv2 code, so it carries the same
@@ -78,7 +93,10 @@ licence:
 - the HQR LZSS expander (`expand_lz` in `src/hqr.c`) is ported from the GPLv2
   LBA engine source (`ExpandLZ`, LBALab/lba2-classic-community);
 - the FLA frame decoders (`src/fla.c`) follow the GPLv2 TwinEngine
-  implementation of the key-frame and delta painters.
+  implementation of the key-frame and delta painters;
+- the ACF/XCF tile decoder (`src/acf.c`) is adapted from the GPLv2 Time
+  Commando player (`timeco/src/acf.c`, LBALab), itself based on the
+  Defence-Force ACF2PCX notes and the Adeline `DEC_XCF` source.
 
 The remaining code (CD-image reader, VOC decoder, SDL3 video/audio, CLI) is
 original to this project, but because the parts above are derived from GPLv2

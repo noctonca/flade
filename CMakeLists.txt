@@ -16,6 +16,7 @@ add_executable(flade
   src/hqr.c
   src/voc.c
   src/fla.c
+  src/acf.c
   src/audio.c)
 
 target_link_libraries(flade PRIVATE SDL3::SDL3)
@@ -24,6 +25,7 @@ target_link_libraries(flade PRIVATE SDL3::SDL3)
 add_executable(fladump
   tools/fladump.c
   src/fla.c
+  src/acf.c
   src/hqr.c
   src/voc.c
   src/iso9660.c)

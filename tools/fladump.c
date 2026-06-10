@@ -9,6 +9,7 @@
 #include <ctype.h>
 
 #include "../src/fla.h"
+#include "../src/acf.h"
 #include "../src/hqr.h"
 #include "../src/voc.h"
 #include "../src/iso9660.h"
@@ -38,6 +39,41 @@ static uint32_t fnv1a(const uint8_t *p, size_t n) {
         h *= 16777619u;
     }
     return h;
+}
+
+/* ACF dump. `target` is 0-indexed to match the Python reference decoder
+ * (acf_decode.py): flade's cur_frame is 1-based, so frame N == cur_frame N+1. */
+static int dump_acf(const uint8_t *mbuf, size_t msize, int target, const char *out) {
+    acf_t a;
+    if (acf_open(&a, mbuf, msize) != 0) {
+        fprintf(stderr, "not an ACF\n");
+        return 1;
+    }
+    printf("ACF %dx%d  frames=%d  fps=%.0f\n", a.width, a.height, a.num_frames, a.fps);
+    int pal_max = 0;
+    while (acf_step(&a)) {
+        int idx = a.cur_frame - 1;
+        for (int i = 0; i < 768; i++)
+            if (a.palette[i] > pal_max)
+                pal_max = a.palette[i];
+        if (idx < 3 || idx == target)
+            printf("  frame %4d: framehash=%08x\n", idx,
+                   fnv1a(a.frame, (size_t)a.width * a.height));
+        if (idx == target) {
+            FILE *f = fopen(out, "wb");
+            if (f) {
+                fprintf(f, "P6\n%d %d\n255\n", a.width, a.height);
+                for (int i = 0; i < a.width * a.height; i++)
+                    fwrite(&a.palette[a.frame[i] * 3], 1, 3, f); /* ACF palette is full 8-bit */
+                fclose(f);
+                printf("  wrote %s (frame %d)\n", out, target);
+            }
+        }
+    }
+    printf("summary: %d frames decoded, palette max channel=%d %s\n", a.cur_frame, pal_max,
+           pal_max <= 63 ? "(6-bit! needs <<2)" : "(full 8-bit)");
+    acf_close(&a);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -84,6 +120,15 @@ int main(int argc, char **argv) {
     if (!mbuf) {
         fprintf(stderr, "cannot read movie\n");
         return 1;
+    }
+
+    if (msize >= 8 && memcmp(mbuf, "FrameLen", 8) == 0) {
+        int rc = dump_acf(mbuf, msize, target, out);
+        free(mbuf);
+        free(hqr);
+        if (iso)
+            iso_close(iso);
+        return rc;
     }
 
     fla_t fla;
