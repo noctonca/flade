@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Hardening gate: build the SDL-free decoder tools, then exercise the parsers
+  # with the negative/robustness tests and a short fuzz smoke. No game data, no
+  # SDL3 - this is what guards the decoders against malformed input.
+  hardening:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build
+      - name: Negative / robustness tests (ASan+UBSan)
+        run: bash scripts/test-negative.sh
+      - name: Fuzz smoke (20s per parser)
+        run: bash scripts/fuzz.sh 20
+
+  # Build the player itself (needs SDL3) so an SDL-facing compile break is caught.
+  flade-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev
+      - name: Build + install SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.0 \
+            https://github.com/libsdl-org/SDL /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/SDL/build
+          sudo cmake --install /tmp/SDL/build
+      - name: Build flade
+        run: |
+          cmake -B build -G Ninja
+          cmake --build build

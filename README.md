@@ -133,6 +133,29 @@ The `Sound*` chunks hold one continuous 8-bit PCM track whose length matches the
 video; flade concatenates it and plays it alongside the wall-clock video, so the
 two stay in sync without polling. (SCENE backgrounds carry no audio.)
 
+## Testing & hardening
+
+The decoders parse untrusted binary, so robustness matters. The whole decode
+core is SDL-free, which makes it directly sanitisable and fuzzable headless.
+
+- `tools/movscan.c` opens any movie (loose / in a CD image / an HQR entry),
+  decodes every frame, checks audio, and prints a stable digest with exit codes.
+- `scripts/test-corpus.sh` decodes every retail movie (FLA + ACF + SMK) through a
+  sanitised (ASan+UBSan) movscan and diffs the digests against
+  `tests/golden-digests.txt`, so a decode change can't slip in. Needs the games;
+  configure paths via env, `--update` to refresh the baseline.
+- `scripts/test-negative.sh` feeds malformed inputs and bad CLI args through the
+  sanitised tools and asserts none crash. Asset-free.
+- `scripts/fuzz.sh [seconds]` builds and runs libFuzzer targets (`tests/fuzz/`)
+  over the movie front, the HQR/LZSS reader, the VOC parser and the XMI path,
+  all under ASan+UBSan.
+
+The negative tests and a fuzz smoke run in CI (`.github/workflows/ci.yml`); the
+full sanitised corpus sweep is local, since it needs the game data. Fuzzing the
+decoders turned up and fixed several memory bugs (ACF/FLA frame-buffer overflows
+on malformed motion data, a double-free in vendored libsmacker); the decoders
+are clean on the whole corpus and survive the fuzzers.
+
 ## Provenance & licence
 
 **GPL-2.0** (see `LICENSE`). flade adapts GPLv2 code, so it carries the same

@@ -13,7 +13,9 @@ if(FLADE_SANITIZE)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-find_package(SDL3 CONFIG REQUIRED)
+# SDL3 powers the player itself; the headless decoder tools need none, so it is
+# optional - without it CI can still build and harden the decoders.
+find_package(SDL3 CONFIG QUIET)
 
 # The SDL-free decoder core (parsers + decoders): reused by the headless tools.
 set(DECODER_SRC
@@ -29,29 +31,6 @@ set(DECODER_SRC
   src/libsmacker/smk_bitstream.c
   src/libsmacker/smk_hufftree.c)
 
-add_executable(flade
-  src/main.c
-  src/movie.c
-  src/player.c
-  src/iso9660.c
-  src/hqr.c
-  src/voc.c
-  src/fla.c
-  src/acf.c
-  src/audio.c
-  src/midi.c
-  src/xmidi.c
-  src/smk.c
-  src/libsmacker/smacker.c
-  src/libsmacker/smacker_compat.c
-  src/libsmacker/smk_bitstream.c
-  src/libsmacker/smk_hufftree.c)
-
-target_link_libraries(flade PRIVATE SDL3::SDL3)
-if(NOT WIN32)
-  target_link_libraries(flade PRIVATE m) # tsf/midi math
-endif()
-
 # Vendored libsmacker (LGPL) - build it without our strict warnings.
 set_source_files_properties(
   src/libsmacker/smacker.c
@@ -59,6 +38,22 @@ set_source_files_properties(
   src/libsmacker/smk_bitstream.c
   src/libsmacker/smk_hufftree.c
   PROPERTIES COMPILE_OPTIONS "-w")
+
+set(FLADE_TARGETS fladump movscan)
+
+if(SDL3_FOUND)
+  add_executable(flade
+    src/main.c
+    src/player.c
+    src/audio.c
+    src/midi.c
+    src/xmidi.c
+    ${DECODER_SRC})
+  target_link_libraries(flade PRIVATE SDL3::SDL3)
+  list(APPEND FLADE_TARGETS flade)
+else()
+  message(STATUS "SDL3 not found - building headless tools only (movscan, fladump), not flade")
+endif()
 
 # Headless tools over the SDL-free decoder core (no SDL needed).
 add_executable(fladump tools/fladump.c
@@ -68,9 +63,9 @@ add_executable(fladump tools/fladump.c
 add_executable(movscan tools/movscan.c ${DECODER_SRC})
 target_include_directories(movscan PRIVATE src)
 
-foreach(t flade fladump movscan)
+foreach(t ${FLADE_TARGETS})
   if(NOT WIN32)
-    target_link_libraries(${t} PRIVATE m)
+    target_link_libraries(${t} PRIVATE m) # tsf/midi math
   endif()
   if(MSVC)
     target_compile_options(${t} PRIVATE /W3)
