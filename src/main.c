@@ -23,6 +23,10 @@
 #include "iso9660.h"
 #include "source.h"
 
+#ifndef FLADE_VERSION
+#define FLADE_VERSION "dev"
+#endif
+
 /* ----- a decoded-sample cache, keyed by FLASAMP.HQR index ----------------- */
 typedef struct {
     voc_t voc;
@@ -91,7 +95,8 @@ static void usage(void) {
            "                   content + the RESS catalogue (e.g. INTRO.SMK)\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
-           "  --volume <f>     master volume 0..1 (default 0.7)\n");
+           "  --volume <f>     master volume 0..1 (default 0.7)\n"
+           "  --version        print the version and exit\n");
 }
 
 /* Derive "<dir-of-path>/FLASAMP.HQR". */
@@ -151,6 +156,9 @@ int main(int argc, char **argv) {
             volume = (float)atof(argv[++i]);
         else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             usage();
+            return 0;
+        } else if (!strcmp(a, "-V") || !strcmp(a, "--version")) {
+            printf("flade %s\n", FLADE_VERSION);
             return 0;
         } else if (a[0] != '-')
             movie = a;

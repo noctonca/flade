@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(flade C)
+project(flade VERSION 0.1.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -50,7 +50,14 @@ if(SDL3_FOUND)
     src/midi.c
     src/xmidi.c
     ${DECODER_SRC})
-  target_link_libraries(flade PRIVATE SDL3::SDL3)
+  # Link the static SDL3 when it's the one that was built (release binaries),
+  # otherwise the shared one (a normal dev build against system SDL3).
+  if(TARGET SDL3::SDL3-static)
+    target_link_libraries(flade PRIVATE SDL3::SDL3-static)
+  else()
+    target_link_libraries(flade PRIVATE SDL3::SDL3)
+  endif()
+  target_compile_definitions(flade PRIVATE FLADE_VERSION="${PROJECT_VERSION}")
   list(APPEND FLADE_TARGETS flade)
 else()
   message(STATUS "SDL3 not found - building headless tools only (movscan, fladump), not flade")

@@ -14,6 +14,13 @@ It reads loose movie files or pulls them straight out of a raw CD image (LBA1
 needed. Every decoded frame is cached, so rewind and scrub are instant and
 frame-accurate.
 
+## Download
+
+Prebuilt, statically linked binaries (nothing to install, not even SDL3) for
+Linux and Windows are on the [releases page](../../releases). You supply your
+own retail game data; flade ships no copyrighted assets. To build from source
+instead, read on.
+
 ## Building
 
 Needs a C11 compiler, CMake ≥ 3.16, and SDL3.

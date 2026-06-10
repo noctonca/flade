@@ -1,0 +1,97 @@
+name: release
+
+# Push a version tag to cut a release:  git tag v0.1.0 && git push origin v0.1.0
+# Or run manually (workflow_dispatch) to build the binaries without releasing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential \
+            libasound2-dev libpulse-dev libudev-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            libgl1-mesa-dev libegl1-mesa-dev
+      - name: Build static SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.0 https://github.com/libsdl-org/SDL /tmp/SDL
+          cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST_LIBRARY=OFF -DCMAKE_INSTALL_PREFIX=/tmp/sdl3
+          cmake --build /tmp/SDL/build
+          cmake --install /tmp/SDL/build
+      - name: Build flade
+        run: |
+          cmake -B build -G Ninja -DCMAKE_PREFIX_PATH=/tmp/sdl3 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target flade
+      - name: Package
+        run: |
+          D="flade-${{ github.ref_name }}-linux-x86_64"
+          mkdir -p "$D"
+          cp build/flade README.md LICENSE "$D"/
+          tar czf "$D.tar.gz" "$D"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: "*.tar.gz"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build static SDL3
+        run: |
+          git clone --depth 1 --branch release-3.2.0 https://github.com/libsdl-org/SDL SDL
+          cmake -S SDL -B SDL/build -DCMAKE_BUILD_TYPE=Release `
+            -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_FORCE_STATIC_VCRT=ON `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/sdl3"
+          cmake --build SDL/build --config Release
+          cmake --install SDL/build --config Release
+      - name: Build flade
+        run: |
+          cmake -B build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/sdl3" `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build build --config Release --target flade
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/flade.exe -Destination dist/
+          Copy-Item -Path README.md, LICENSE -Destination dist/
+          Compress-Archive -Path dist/* -DestinationPath "flade-${{ github.ref_name }}-windows-x64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: "*.zip"
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            **flade ${{ github.ref_name }}** - a standalone player for Adeline movies:
+            *Little Big Adventure 1* (FLA), *Time Commando* (ACF), *Little Big Adventure 2* (SMK).
+
+            Self-contained, statically linked (no SDL3 to install): download, unpack, run.
+            You supply your own retail game data (`LBA.DOT` / `GAME.GOG` / `LBA2.GOG`); see the
+            README for how to point flade at it.
+
+            - Linux x86_64: `flade-${{ github.ref_name }}-linux-x86_64.tar.gz`
+            - Windows x64: `flade-${{ github.ref_name }}-windows-x64.zip`

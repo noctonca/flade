@@ -29,3 +29,6 @@ crash-*
 corpus_*/
 oom-*
 timeout-*
+build-static/
+dist/
+/SDL/
