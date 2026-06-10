@@ -53,14 +53,13 @@ jobs:
         run: |
           git clone --depth 1 --branch release-3.2.0 https://github.com/libsdl-org/SDL SDL
           cmake -S SDL -B SDL/build -DCMAKE_BUILD_TYPE=Release `
-            -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_FORCE_STATIC_VCRT=ON `
+            -DSDL_STATIC=ON -DSDL_SHARED=OFF -DSDL_TEST_LIBRARY=OFF `
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/sdl3"
           cmake --build SDL/build --config Release
           cmake --install SDL/build --config Release
       - name: Build flade
         run: |
-          cmake -B build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/sdl3" `
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake -B build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/sdl3" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --target flade
       - name: Package
         run: |
