@@ -56,48 +56,54 @@ static void draw_key_frame(fla_t *f, const uint8_t *ptr, const uint8_t *end) {
 /* Delta patch over the previous picture. A leading skip selects the first line
  * and the number of lines touched; each line is skip/run encoded. */
 static void draw_delta_frame(fla_t *f, const uint8_t *ptr, const uint8_t *end) {
+    const size_t SIZE = (size_t)FLA_W * FLA_H;
     if (ptr + 4 > end)
         return;
     uint16_t skip = rd16(ptr);
     ptr += 2;
     int16_t height = (int16_t)rd16(ptr);
     ptr += 2;
-    if (height <= 0)
+    /* Bound the start row and row count up front: skip*FLA_W could otherwise
+     * form a pointer far past the frame, and writes use a bounded index. */
+    if (height <= 0 || skip >= FLA_H)
         return;
+    if (height > FLA_H - skip)
+        height = FLA_H - skip;
 
-    uint8_t *cap = f->frame + FLA_W * FLA_H;
-    uint8_t *line = f->frame + (size_t)skip * FLA_W;
-    if (line > cap)
-        return;
-    uint8_t *dst = line;
-
+    size_t line = (size_t)skip * FLA_W;
     do {
         if (ptr >= end)
             break;
         int8_t runs = (int8_t)*ptr++;
+        size_t di = line;
         for (int a = 0; a < runs; a++) {
             if (ptr >= end)
                 break;
-            dst += (uint8_t)*ptr++; /* horizontal skip */
+            di += (uint8_t)*ptr++; /* horizontal skip */
             if (ptr >= end)
                 break;
             int8_t tag = (int8_t)*ptr++;
             if (tag > 0) {
                 for (int b = 0; b < tag; b++)
-                    if (dst < cap && ptr < end)
-                        *dst++ = *ptr++;
+                    if (ptr < end) {
+                        uint8_t c = *ptr++;
+                        if (di < SIZE)
+                            f->frame[di] = c;
+                        di++;
+                    }
             } else {
                 int count = -tag;
                 if (ptr >= end)
                     break;
                 uint8_t color = *ptr++;
-                for (int b = 0; b < count; b++)
-                    if (dst < cap)
-                        *dst++ = color;
+                for (int b = 0; b < count; b++) {
+                    if (di < SIZE)
+                        f->frame[di] = color;
+                    di++;
+                }
             }
         }
         line += FLA_W;
-        dst = line;
     } while (--height);
 }
 

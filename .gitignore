@@ -24,3 +24,6 @@ compile_commands.json
 *.smk
 *.GOG
 *.gog
+crash-*
+/build/
+corpus_*/

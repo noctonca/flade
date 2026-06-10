@@ -312,6 +312,11 @@ struct smk_huff16_t* _smk_huff16_build(struct smk_bit_t* bs)
 	/* Done with 8-bit hufftrees, free them. */
 	smk_huff8_free(hi8);
 	smk_huff8_free(low8);
+	/* flade: NULL these so a later goto error (the final-tag check below) does
+	 * not double-free them via the error block - upstream libsmacker bug,
+	 * found by fuzzing. smk_huff8_free() only nulls its local parameter. */
+	hi8 = NULL;
+	low8 = NULL;
 
 	/* Check final end tag. */
 	smk_bs_read_1(bs, bit);

@@ -686,8 +686,16 @@ static int chunk_is(const u8 *p, const char *tag) {
 
 static void read_format(acf_t *a, const u8 *pay, u32 size) {
     if (size >= 28) {
-        a->width = (int)RD_U32(pay + 4);
-        a->height = (int)RD_U32(pay + 8);
+        /* the XCF codec is fixed 320-wide (the offset tables bake 320 in); only
+         * the height varies. Force/clamp both so malformed dims can't run the
+         * tile loop or buffer sizing out of range. */
+        a->width = 320;
+        int hh = (int)RD_U32(pay + 8);
+        if (hh < 8)
+            hh = 8;
+        if (hh > 480)
+            hh = 480;
+        a->height = hh & ~7; /* whole 8-pixel tile rows */
         u32 play_rate = RD_U32(pay + 24);
         a->fps = (play_rate >= 5 && play_rate <= 60) ? (double)play_rate : 15.0;
     }
@@ -699,13 +707,26 @@ static void read_format(acf_t *a, const u8 *pay, u32 size) {
     }
 }
 
-static int alloc_buffers(int w, int h) {
-    size_t n = (size_t)w * (size_t)h;
-    free(current_buffer);
-    free(previous_buffer);
-    current_buffer = calloc(1, n ? n : 1);
-    previous_buffer = calloc(1, n ? n : 1);
-    return (current_buffer && previous_buffer) ? 0 : -1;
+/* Frame buffers are padded front and back with ACF_SLACK bytes so that the
+ * untrusted motion offsets (up to 16-bit, signed) used by the motion opcodes
+ * can never read or write outside the allocation - malformed data produces
+ * garbage pixels, not an overflow. The logical buffer sits at base+ACF_SLACK. */
+#define ACF_W 320
+#define ACF_H_MAX 480
+#define ACF_SLACK 65536
+static u8 *buf_base[2];
+
+static int alloc_buffers(void) {
+    size_t total = (size_t)ACF_SLACK + (size_t)ACF_W * ACF_H_MAX + (size_t)ACF_SLACK;
+    free(buf_base[0]);
+    free(buf_base[1]);
+    buf_base[0] = calloc(1, total);
+    buf_base[1] = calloc(1, total);
+    if (!buf_base[0] || !buf_base[1])
+        return -1;
+    current_buffer = buf_base[0] + ACF_SLACK;
+    previous_buffer = buf_base[1] + ACF_SLACK;
+    return 0;
 }
 
 int acf_open(acf_t *a, const uint8_t *data, size_t size) {
@@ -768,7 +789,7 @@ int acf_open(acf_t *a, const uint8_t *data, size_t size) {
     }
     free(araw);
 
-    if (alloc_buffers(a->width, a->height) != 0)
+    if (alloc_buffers() != 0)
         return -1;
     frame_width = a->width;
     frame_height = a->height;
@@ -819,10 +840,10 @@ void acf_close(acf_t *a) {
         free(a->audio);
         a->audio = NULL;
     }
-    free(current_buffer);
-    free(previous_buffer);
-    current_buffer = NULL;
-    previous_buffer = NULL;
+    free(buf_base[0]);
+    free(buf_base[1]);
+    buf_base[0] = buf_base[1] = NULL;
+    current_buffer = previous_buffer = NULL;
 }
 
 /* ----- movie-interface adapter -------------------------------------------- */
