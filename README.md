@@ -5,11 +5,14 @@ plays two of Adeline's cutscene formats:
 
 - **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects
   (and the cutscene MIDI flute in FLUTE2/GLASS2, given a soundfont);
-- **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec with embedded audio.
+- **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec with embedded audio;
+- **SMK**: *Little Big Adventure 2* (1997) Smacker cinematics (video + music and
+  voice), via libsmacker.
 
 It reads loose movie files or pulls them straight out of a raw CD image (LBA1
-`LBA.DOT`, Time Commando `GAME.GOG`), with no extraction step needed. Every
-decoded frame is cached, so rewind and scrub are instant and frame-accurate.
+`LBA.DOT`, Time Commando `GAME.GOG`, LBA2 `LBA2.GOG`), with no extraction step
+needed. Every decoded frame is cached, so rewind and scrub are instant and
+frame-accurate.
 
 ## Building
 
@@ -44,6 +47,14 @@ From a loose movie file:
 ```bash
 ./build/flade INTROD.FLA          # FLASAMP.HQR alongside it, or --flasamp
 ./build/flade ACTIVISI.ACF
+./build/flade cutscene.smk
+```
+
+LBA2's Smacker cinematics live in `VIDEO.HQR` (one `.smk` per entry). Point
+flade at the HQR and pick an entry with `--index`:
+
+```bash
+./build/flade --cd /path/to/LBA2.GOG /LBA2/VIDEO/VIDEO.HQR --index 0
 ```
 
 A couple of FLA cutscenes (FLUTE2, GLASS2) are scored with a MIDI flute. To
@@ -76,6 +87,7 @@ frame-accurate; audio plays during normal forward and is muted for reverse / FF
 | `movie.c` | format detection + the generic decoder interface (`movie.h`) |
 | `fla.c` | FLA decoder (LBA1): palette / key-frame RLE / delta patches |
 | `acf.c` | ACF/XCF decoder (Time Commando): 64-opcode 8x8 tile codec |
+| `smk.c` | Smacker decoder (LBA2) via vendored libsmacker; mixes audio tracks |
 | `iso9660.c` | read / list / walk a raw (2352) or cooked (2048) CD image |
 | `hqr.c` | HQR archive table + LZSS/LZMIT (`ExpandLZ`) expansion |
 | `voc.c` | Creative Voice File → signed-16 mono PCM (FLA samples) |
@@ -126,7 +138,8 @@ licence:
   Defence-Force ACF2PCX notes and the Adeline `DEC_XCF` source;
 - MIDI uses vendored `src/xmidi.c` (XMI→SMF, GPLv2, from TwinEngine /
   ScummVM / Exult), `src/tml.h` (MIDI loader, zlib) and `src/tsf.h`
-  (TinySoundFont synth, MIT), both by Bernhard Schelling.
+  (TinySoundFont synth, MIT), both by Bernhard Schelling;
+- Smacker decoding uses vendored `src/libsmacker/` (LGPL 2.1).
 
 The remaining code (CD-image reader, VOC decoder, SDL3 video/audio, CLI) is
 original to this project, but because the parts above are derived from GPLv2

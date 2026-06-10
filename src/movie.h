@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { MOVIE_UNKNOWN = 0, MOVIE_FLA, MOVIE_ACF } movie_kind;
+typedef enum { MOVIE_UNKNOWN = 0, MOVIE_FLA, MOVIE_ACF, MOVIE_SMK } movie_kind;
 
 typedef struct movie movie_t;
 

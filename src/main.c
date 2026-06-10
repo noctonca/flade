@@ -145,6 +145,7 @@ static void usage(void) {
            "  --flasamp <file> FLASAMP.HQR for a loose FLA (default: alongside it)\n"
            "  --midi <file>    MIDI_MI.HQR for FLA cutscene music (default: from --cd)\n"
            "  --soundfont <f>  .sf2 for MIDI (default: a system soundfont)\n"
+           "  --index <n>      play entry n when the input is an HQR (LBA2 VIDEO.HQR)\n"
            "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
@@ -178,6 +179,7 @@ int main(int argc, char **argv) {
     const char *midi_path = NULL;
     const char *soundfont_path = NULL;
     int do_list = 0, no_audio = 0, scale = 3;
+    int video_index = 0; /* entry to play when the input is an HQR of movies */
     float volume = 0.7f;
 
     for (int i = 1; i < argc; i++) {
@@ -190,6 +192,8 @@ int main(int argc, char **argv) {
             midi_path = argv[++i];
         else if (!strcmp(a, "--soundfont") && i + 1 < argc)
             soundfont_path = argv[++i];
+        else if (!strcmp(a, "--index") && i + 1 < argc)
+            video_index = atoi(argv[++i]);
         else if (!strcmp(a, "--list"))
             do_list = 1;
         else if (!strcmp(a, "--no-audio"))
@@ -284,11 +288,24 @@ int main(int argc, char **argv) {
 
     movie_t mv;
     if (movie_open(&mv, movie_buf, movie_size, movie) != 0) {
-        fprintf(stderr, "flade: '%s' is not a movie I can play\n", movie);
-        free(movie_buf);
-        if (iso)
-            iso_close(iso);
-        return 1;
+        /* Not a bare movie - maybe an HQR container of movies (LBA2's
+         * VIDEO.HQR holds one .smk per entry). Play entry `video_index`. */
+        uint8_t *entry = NULL;
+        size_t esize = 0;
+        if (hqr_count(movie_buf, movie_size) > 0 &&
+            hqr_entry(movie_buf, movie_size, video_index, &entry, &esize) == 0 &&
+            movie_open(&mv, entry, esize, movie) == 0) {
+            free(movie_buf); /* the movie now references the decoded entry */
+            movie_buf = entry;
+            movie_size = esize;
+        } else {
+            free(entry);
+            fprintf(stderr, "flade: '%s' is not a movie I can play\n", movie);
+            free(movie_buf);
+            if (iso)
+                iso_close(iso);
+            return 1;
+        }
     }
     printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv.width, mv.height,
            mv.num_frames, mv.fps);

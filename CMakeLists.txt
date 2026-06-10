@@ -20,12 +20,25 @@ add_executable(flade
   src/acf.c
   src/audio.c
   src/midi.c
-  src/xmidi.c)
+  src/xmidi.c
+  src/smk.c
+  src/libsmacker/smacker.c
+  src/libsmacker/smacker_compat.c
+  src/libsmacker/smk_bitstream.c
+  src/libsmacker/smk_hufftree.c)
 
 target_link_libraries(flade PRIVATE SDL3::SDL3)
 if(NOT WIN32)
   target_link_libraries(flade PRIVATE m) # tsf/midi math
 endif()
+
+# Vendored libsmacker (LGPL) - build it without our strict warnings.
+set_source_files_properties(
+  src/libsmacker/smacker.c
+  src/libsmacker/smacker_compat.c
+  src/libsmacker/smk_bitstream.c
+  src/libsmacker/smk_hufftree.c
+  PROPERTIES COMPILE_OPTIONS "-w")
 
 # Headless verification harness for the SDL-free decoder core (no SDL needed).
 add_executable(fladump
