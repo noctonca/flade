@@ -72,6 +72,15 @@ static int dump_acf(const uint8_t *mbuf, size_t msize, int target, const char *o
     }
     printf("summary: %d frames decoded, palette max channel=%d %s\n", a.cur_frame, pal_max,
            pal_max <= 63 ? "(6-bit! needs <<2)" : "(full 8-bit)");
+    if (a.audio_frames) {
+        double adur = (double)a.audio_frames / a.audio_rate;
+        double vdur = (double)a.cur_frame / a.fps;
+        printf("audio: %zu frames @ %d Hz x %dch = %.3fs  (video %.3fs)  %s\n", a.audio_frames,
+               a.audio_rate, a.audio_channels, adur, vdur,
+               (adur > vdur - 0.1 && adur < vdur + 0.1) ? "MATCHED" : "MISMATCH");
+    } else {
+        printf("audio: none\n");
+    }
     acf_close(&a);
     return 0;
 }

@@ -4,11 +4,11 @@ A small standalone player for **Adeline movies**, rendered with **SDL3**. It
 plays two of Adeline's cutscene formats:
 
 - **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects;
-- **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec (video only so far).
+- **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec with embedded audio.
 
 It reads loose movie files or pulls them straight out of a raw CD image (LBA1
-`LBA.DOT`, Time Commando `GAME.GOG`), with no extraction step needed. ACF audio
-(embedded streaming PCM) is not wired up yet, so ACF plays silently for now.
+`LBA.DOT`, Time Commando `GAME.GOG`), with no extraction step needed. Every
+decoded frame is cached, so rewind and scrub are instant and frame-accurate.
 
 ## Building
 
@@ -48,7 +48,8 @@ From a loose movie file:
 Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`.
 
 Transport (every decoded frame is cached, so rewind and scrub are instant and
-frame-accurate):
+frame-accurate; audio plays during normal forward and is muted for reverse / FF
+/ scrub):
 
 | key | action |
 |---|---|
@@ -96,6 +97,10 @@ A flat list of chunks (`tag[8]` + `size:u32` + payload): `FrameLen`, `Format`
 decode routines (raw / fills / packed-index tiles / motion copies + sparse
 residual passes), double-buffered against the previous frame. Verified
 pixel-identical to the reference Python decoder across key and delta frames.
+
+The `Sound*` chunks hold one continuous 8-bit PCM track whose length matches the
+video; flade concatenates it and plays it alongside the wall-clock video, so the
+two stay in sync without polling. (SCENE backgrounds carry no audio.)
 
 ## Provenance & licence
 

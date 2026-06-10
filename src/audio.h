@@ -20,4 +20,13 @@ void audio_stop(int id);
 void audio_stop_all(void);
 int audio_active(void); /* number of channels still sounding */
 
+/* ----- streaming audio track (ACF) ---------------------------------------
+ * A whole-movie PCM track played on its own device stream, started from an
+ * arbitrary sample offset (for seeking). Independent of the cue mixer above.
+ * `pcm` must outlive playback. SDL_INIT_AUDIO must already be up. */
+int audio_stream_start(const int16_t *pcm, size_t frames, int rate, int channels,
+                       size_t start_frame, float volume); /* 0 on success */
+void audio_stream_set_paused(int paused);
+void audio_stream_stop(void);
+
 #endif /* FLADE_AUDIO_H */

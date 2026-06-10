@@ -32,6 +32,13 @@ struct movie {
     int (*step)(movie_t *, movie_frame *); /* 1 = frame produced, 0 = end */
     void (*close)(movie_t *);
     void *impl;
+
+    /* Streaming audio track, whole-movie, matched in duration to the video
+     * (ACF). NULL for cue-based formats (FLA). Interleaved signed 16-bit. */
+    const int16_t *audio_pcm;
+    size_t audio_frames; /* per-channel sample count */
+    int audio_rate;
+    int audio_channels;
 };
 
 /* Detect the format of an in-memory movie (by content; `name` is a hint) and

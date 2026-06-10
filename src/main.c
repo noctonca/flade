@@ -298,10 +298,13 @@ int main(int argc, char **argv) {
                                          SDL_TEXTUREACCESS_STREAMING, mv.width, mv.height);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
-    /* ----- audio + sample bank (FLA cue path; entirely optional) ---------- */
+    /* ----- audio (FLA cue mixer or ACF streaming track; optional) --------- */
     sample_bank bank;
-    int have_audio = 0;
+    int have_audio = 0;  /* FLA cue mixer ready */
+    int have_stream = 0; /* ACF streaming track available */
     memset(&bank, 0, sizeof(bank));
+    if (!no_audio && !cues && mv.audio_pcm && mv.audio_frames > 0)
+        have_stream = 1; /* SDL audio is up; the stream opens on demand */
     if (!no_audio && cues) {
         uint8_t *hqr = NULL;
         size_t hqr_size = 0;
@@ -334,8 +337,8 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "flade: '%s' not usable; playing video only\n", flasamp_path);
         }
     }
-    if (!no_audio && !have_audio)
-        printf("flade: no samples - playing video only\n");
+    if (!no_audio && !have_audio && !have_stream)
+        printf("flade: no audio track - playing video only\n");
 
     /* ----- playback loop (cached, so rewind / scrub are instant) ---------- */
     player_t *pl = player_open(&mv);
@@ -348,6 +351,8 @@ int main(int argc, char **argv) {
     int paused = 0;
     int quit = 0;
     int have_frame = 0;
+    int was_audio_active = 0; /* ACF stream was playing last iteration */
+    int seeked = 0;           /* a key jumped the playhead this frame */
     movie_frame fr;
     Uint64 prev = SDL_GetTicksNS();
 
@@ -405,6 +410,26 @@ int main(int argc, char **argv) {
             fprintf(stderr, "flade: no frames decoded\n");
             break;
         }
+
+        /* ACF streaming audio rides alongside the wall-clock video (the track
+         * matches the video's duration). Play only in normal forward; pause
+         * when paused; mute (and re-sync on return) for reverse / FF / scrub. */
+        if (have_stream) {
+            int audio_active = dir > 0 && speed > 0.99 && speed < 1.01;
+            if (audio_active) {
+                if (!was_audio_active || seeked) {
+                    size_t sf = (size_t)((double)idx / mv.fps * (double)mv.audio_rate);
+                    if (audio_stream_start(mv.audio_pcm, mv.audio_frames, mv.audio_rate,
+                                           mv.audio_channels, sf, volume) != 0)
+                        have_stream = 0; /* no device - drop to silent */
+                }
+                audio_stream_set_paused(paused);
+            } else if (was_audio_active) {
+                audio_stream_stop();
+            }
+            was_audio_active = audio_active;
+        }
+        seeked = 0;
 
         if (have_frame) {
             uint32_t lut[256];
@@ -472,20 +497,24 @@ int main(int argc, char **argv) {
                     if (pos < 0.0)
                         pos = 0.0;
                     audio_stop_all();
+                    seeked = 1;
                     break;
                 case SDLK_RIGHT: /* seek forward ~5s */
                     pos += 5.0 * mv.fps;
                     audio_stop_all();
+                    seeked = 1;
                     break;
                 case SDLK_COMMA: /* step one frame back */
                     paused = 1;
                     pos -= 1.0;
                     if (pos < 0.0)
                         pos = 0.0;
+                    seeked = 1;
                     break;
                 case SDLK_PERIOD: /* step one frame forward */
                     paused = 1;
                     pos += 1.0;
+                    seeked = 1;
                     break;
                 case SDLK_MINUS: /* slower */
                     speed *= 0.5;
@@ -503,6 +532,7 @@ int main(int argc, char **argv) {
                     pos = 0.0;
                     dir = 1;
                     audio_stop_all();
+                    seeked = 1;
                     break;
                 case SDLK_F: {
                     bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
@@ -520,6 +550,7 @@ int main(int argc, char **argv) {
     player_close(pl);
 
     /* ----- teardown ------------------------------------------------------- */
+    audio_stream_stop();
     if (have_audio) {
         audio_stop_all();
         audio_shutdown();

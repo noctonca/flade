@@ -684,6 +684,12 @@ static void read_format(acf_t *a, const u8 *pay, u32 size) {
         u32 play_rate = RD_U32(pay + 24);
         a->fps = (play_rate >= 5 && play_rate <= 60) ? (double)play_rate : 15.0;
     }
+    if (size >= 36) {
+        u32 sampling_rate = RD_U32(pay + 28);
+        u32 sample_type = RD_U32(pay + 32); /* 2 = stereo */
+        a->audio_rate = (sampling_rate >= 4000 && sampling_rate <= 48000) ? (int)sampling_rate : 22050;
+        a->audio_channels = (sample_type == 2) ? 2 : 1;
+    }
 }
 
 static int alloc_buffers(int w, int h) {
@@ -705,10 +711,15 @@ int acf_open(acf_t *a, const uint8_t *data, size_t size) {
     a->width = 320;
     a->height = 240;
     a->fps = 15.0;
+    a->audio_rate = 22050;
+    a->audio_channels = 2;
 
-    /* pre-walk: read Format and count frame chunks */
+    /* pre-walk: read Format, count frames, and gather the audio (the Sound*
+     * chunks are raw 8-bit unsigned PCM, contiguous = the whole soundtrack) */
     size_t pos = 0;
     int frames = 0;
+    uint8_t *araw = NULL;
+    size_t alen = 0, acap = 0;
     while (pos + 12 <= size) {
         const u8 *c = data + pos;
         u32 csize = RD_U32(c + 8);
@@ -716,13 +727,39 @@ int acf_open(acf_t *a, const uint8_t *data, size_t size) {
             break;
         if (chunk_is(c, "End     "))
             break;
-        if (chunk_is(c, "Format  "))
+        if (chunk_is(c, "Format  ")) {
             read_format(a, c + 12, csize);
-        else if (chunk_is(c, "KeyFrame") || chunk_is(c, "DltFrame"))
+        } else if (chunk_is(c, "KeyFrame") || chunk_is(c, "DltFrame")) {
             frames++;
+        } else if (chunk_is(c, "SoundBuf") || chunk_is(c, "SoundFrm")) {
+            if (alen + csize > acap) {
+                size_t ncap = acap ? acap * 2 : 1u << 20;
+                while (ncap < alen + csize)
+                    ncap *= 2;
+                uint8_t *n = realloc(araw, ncap);
+                if (n) {
+                    araw = n;
+                    acap = ncap;
+                }
+            }
+            if (acap >= alen + csize) {
+                memcpy(araw + alen, c + 12, csize);
+                alen += csize;
+            }
+        }
         pos += 12 + csize;
     }
     a->num_frames = frames;
+
+    if (alen > 0 && a->audio_channels > 0) {
+        a->audio = malloc(alen * sizeof(int16_t));
+        if (a->audio) {
+            for (size_t i = 0; i < alen; i++)
+                a->audio[i] = (int16_t)(((int)araw[i] - 128) << 8);
+            a->audio_frames = alen / (size_t)a->audio_channels;
+        }
+    }
+    free(araw);
 
     if (alloc_buffers(a->width, a->height) != 0)
         return -1;
@@ -771,7 +808,10 @@ int acf_step(acf_t *a) {
 }
 
 void acf_close(acf_t *a) {
-    (void)a;
+    if (a) {
+        free(a->audio);
+        a->audio = NULL;
+    }
     free(current_buffer);
     free(previous_buffer);
     current_buffer = NULL;
@@ -818,5 +858,9 @@ int acf_movie_open(movie_t *m, const uint8_t *data, size_t size) {
     m->step = acf_movie_step;
     m->close = acf_movie_close;
     m->impl = am;
+    m->audio_pcm = am->acf.audio;
+    m->audio_frames = am->acf.audio_frames;
+    m->audio_rate = am->acf.audio_rate;
+    m->audio_channels = am->acf.audio_channels;
     return 0;
 }

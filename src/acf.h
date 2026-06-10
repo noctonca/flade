@@ -24,6 +24,11 @@ typedef struct {
     const uint8_t *frame;     /* current decoded frame, width*height indices */
     uint8_t palette[256 * 3]; /* current palette, full 8-bit RGB */
 
+    /* whole-movie audio track, extracted from Sound* chunks (interleaved s16) */
+    int16_t *audio;
+    size_t audio_frames; /* per-channel */
+    int audio_rate, audio_channels;
+
     /* internal: chunk walk over the borrowed file buffer */
     const uint8_t *data;
     size_t size, pos;

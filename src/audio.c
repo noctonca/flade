@@ -156,3 +156,50 @@ int audio_active(void) {
     SDL_UnlockMutex(g_mutex);
     return n;
 }
+
+/* ----- streaming audio track (ACF) ---------------------------------------- */
+static SDL_AudioStream *g_music;
+
+int audio_stream_start(const int16_t *pcm, size_t frames, int rate, int channels,
+                       size_t start_frame, float volume) {
+    audio_stream_stop();
+    if (!pcm || frames == 0 || channels <= 0)
+        return -1;
+
+    SDL_AudioSpec spec;
+    SDL_zero(spec);
+    spec.format = SDL_AUDIO_S16;
+    spec.channels = channels;
+    spec.freq = rate;
+
+    /* the device resamples this src spec to whatever the hardware wants */
+    g_music = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!g_music)
+        return -1;
+    SDL_SetAudioStreamGain(g_music, volume);
+
+    if (start_frame > frames)
+        start_frame = frames;
+    size_t off = start_frame * (size_t)channels;
+    size_t n = (frames - start_frame) * (size_t)channels;
+    if (n)
+        SDL_PutAudioStreamData(g_music, pcm + off, (int)(n * sizeof(int16_t)));
+    SDL_ResumeAudioStreamDevice(g_music);
+    return 0;
+}
+
+void audio_stream_set_paused(int paused) {
+    if (!g_music)
+        return;
+    if (paused)
+        SDL_PauseAudioStreamDevice(g_music);
+    else
+        SDL_ResumeAudioStreamDevice(g_music);
+}
+
+void audio_stream_stop(void) {
+    if (g_music) {
+        SDL_DestroyAudioStream(g_music);
+        g_music = NULL;
+    }
+}
