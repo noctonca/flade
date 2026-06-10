@@ -44,6 +44,7 @@ set(FLADE_TARGETS fladump movscan)
 if(SDL3_FOUND)
   add_executable(flade
     src/main.c
+    src/source.c
     src/player.c
     src/audio.c
     src/midi.c

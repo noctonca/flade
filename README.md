@@ -122,7 +122,8 @@ to the current one if omitted.
 | `voc.c` | Creative Voice File → signed-16 mono PCM (FLA samples) |
 | `midi.c` | render FLA cutscene MIDI (XMI → SMF → TinySoundFont) |
 | `audio.c` | SDL3 mixer: FLA cues + a streaming channel (ACF/SMK/MIDI) + a swappable SMK voice channel |
-| `main.c` | input source, window/texture, generic play loop, `--extract` |
+| `source.c` | find / list / resolve / `--extract` movies from CD images and HQR archives |
+| `main.c` | CLI, window/texture, generic play loop |
 
 ### FLA format, briefly
 
