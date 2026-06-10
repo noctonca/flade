@@ -89,6 +89,25 @@ frame-accurate; audio plays during normal forward and is muted for reverse / FF
 | `Home` | restart |
 | `F` | fullscreen, `Esc`/`Q` quit |
 
+## Extracting
+
+`--extract` unpacks the original files out of a CD image or an HQR archive,
+without decoding anything. Each entry is named by its content (a sniffed
+`.smk` / `.fla` / `.acf` / `.voc` / `.hqr`) and, for LBA2's `VIDEO.HQR`, by its
+real name from the `RESS.HQR` catalogue:
+
+```bash
+./build/flade --extract /path/to/LBA2.GOG out/   # -> out/INTRO.SMK, out/CRASH.SMK, ...
+./build/flade --extract /path/to/GAME.GOG out/   # Time Commando .acf (disc layout mirrored)
+./build/flade --extract /path/to/LBA.DOT  out/   # LBA1 .fla
+./build/flade --extract VIDEO.HQR out/           # a loose HQR -> its entries
+./build/flade --cd LBA2.GOG --extract /LBA2/VIDEO/VIDEO.HQR out/
+```
+
+Loose movie files in an image keep their on-disc directory layout (so Time
+Commando's per-stage `SCENE.ACF` don't collide); the output directory defaults
+to the current one if omitted.
+
 ## How it works
 
 | Module | Responsibility |

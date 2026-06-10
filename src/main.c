@@ -193,12 +193,180 @@ static int lba2_video_names(iso9660_t *iso, char names[][32]) {
     return count;
 }
 
+/* ----- extract: unpack the original files out of a CD image or HQR --------- */
+
+static int write_file(const char *path, const uint8_t *data, size_t n) {
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return -1;
+    int ok = fwrite(data, 1, n, f) == n;
+    fclose(f);
+    return ok ? 0 : -1;
+}
+
+/* Pick a file extension from the content's magic. */
+static const char *sniff_ext(const uint8_t *d, size_t n) {
+    if (n >= 4 && (memcmp(d, "SMK2", 4) == 0 || memcmp(d, "SMK4", 4) == 0))
+        return "smk";
+    if (n >= 4 && memcmp(d, "V1.3", 4) == 0)
+        return "fla";
+    if (n >= 8 && memcmp(d, "FrameLen", 8) == 0)
+        return "acf";
+    if (n >= 19 && memcmp(d, "Creative Voice File", 19) == 0)
+        return "voc";
+    if (hqr_count(d, n) > 0)
+        return "hqr";
+    return "bin";
+}
+
+/* Write every entry of an HQR buffer to outdir. With `names` (the RESS catalog)
+ * each entry keeps its real name; otherwise it's entry_NNNN.<sniffed-type>. */
+static int extract_hqr_buffer(const uint8_t *hqr, size_t size, const char *outdir,
+                              char names[][32], int nnames) {
+    int n = hqr_count(hqr, size), written = 0;
+    if (n < 0)
+        return 0;
+    for (int i = 0; i < n; i++) {
+        uint8_t *e = NULL;
+        size_t es = 0;
+        if (hqr_entry(hqr, size, i, &e, &es) != 0 || es == 0) {
+            free(e);
+            continue;
+        }
+        char path[1100];
+        if (names && i < nnames && names[i][0])
+            snprintf(path, sizeof(path), "%s/%s", outdir, names[i]);
+        else
+            snprintf(path, sizeof(path), "%s/entry_%04d.%s", outdir, i, sniff_ext(e, es));
+        if (write_file(path, e, es) == 0) {
+            printf("  %s  (%zu bytes)\n", path, es);
+            written++;
+        }
+        free(e);
+    }
+    return written;
+}
+
+/* Walk a CD image, copying out every loose movie file (.fla / .acf). */
+typedef struct {
+    iso9660_t *iso;
+    const char *outdir;
+    int count;
+} extract_ctx;
+
+static void extract_walk_cb(void *ud, const char *path, uint32_t size) {
+    (void)size;
+    extract_ctx *e = (extract_ctx *)ud;
+    if (!is_movie_path(path))
+        return;
+    const char *rel = path[0] == '/' ? path + 1 : path;
+    uint8_t *buf = NULL;
+    size_t bs = 0;
+    if (iso_read(e->iso, rel, &buf, &bs) != 0)
+        return;
+    /* mirror the disc layout so same-named files (Time Commando's per-stage
+     * SCENE.ACF) don't collide; create the parent directory chain first. */
+    char out[1100];
+    snprintf(out, sizeof(out), "%s/%s", e->outdir, rel);
+    char *slash = strrchr(out, '/');
+    if (slash) {
+        *slash = 0;
+        SDL_CreateDirectory(out);
+        *slash = '/';
+    }
+    if (write_file(out, buf, bs) == 0) {
+        printf("  %s  (%zu bytes)\n", out, bs);
+        e->count++;
+    }
+    free(buf);
+}
+
+/* Extract the movies from a CD image: loose .fla/.acf plus the Smacker
+ * cinematics inside VIDEO.HQR (named from the RESS.HQR catalogue). */
+static int extract_image(iso9660_t *iso, const char *outdir) {
+    extract_ctx ctx = {iso, outdir, 0};
+    iso_walk(iso, extract_walk_cb, &ctx);
+
+    char vpath[1024];
+    iso_find_basename(iso, "VIDEO.HQR", vpath, sizeof(vpath));
+    if (vpath[0]) {
+        uint8_t *vh = NULL;
+        size_t vs = 0;
+        if (iso_read(iso, vpath, &vh, &vs) == 0) {
+            char names[MAX_VIDEO_NAMES][32];
+            int nv = lba2_video_names(iso, names);
+            ctx.count += extract_hqr_buffer(vh, vs, outdir, nv > 0 ? names : NULL, nv);
+            free(vh);
+        }
+    }
+    return ctx.count;
+}
+
+/* --extract dispatch: source is a loose CD image / HQR, or (with --cd) a path
+ * inside an image. Returns the process exit code. */
+static int run_extract(const char *src, const char *cd_path, const char *outdir) {
+    SDL_CreateDirectory(outdir);
+    int n = 0;
+    if (cd_path) {
+        iso9660_t *img = iso_open(cd_path);
+        if (!img) {
+            fprintf(stderr, "flade: '%s' is not a CD image I can read\n", cd_path);
+            return 1;
+        }
+        uint8_t *buf = NULL;
+        size_t bs = 0;
+        if (iso_read(img, src[0] == '/' ? src + 1 : src, &buf, &bs) != 0) {
+            fprintf(stderr, "flade: '%s' not found in image\n", src);
+            iso_close(img);
+            return 1;
+        }
+        if (hqr_count(buf, bs) > 0) {
+            const char *eb = strrchr(src, '/');
+            eb = eb ? eb + 1 : src;
+            char names[MAX_VIDEO_NAMES][32];
+            int nv = ieq(eb, "VIDEO.HQR") ? lba2_video_names(img, names) : 0;
+            n = extract_hqr_buffer(buf, bs, outdir, nv > 0 ? names : NULL, nv);
+        } else {
+            const char *base = strrchr(src, '/');
+            base = base ? base + 1 : src;
+            char out[1100];
+            snprintf(out, sizeof(out), "%s/%s", outdir, base);
+            if (write_file(out, buf, bs) == 0) {
+                printf("  %s  (%zu bytes)\n", out, bs);
+                n = 1;
+            }
+        }
+        free(buf);
+        iso_close(img);
+    } else {
+        iso9660_t *img = iso_open(src);
+        if (img) {
+            n = extract_image(img, outdir);
+            iso_close(img);
+        } else {
+            size_t bs = 0;
+            uint8_t *buf = read_file(src, &bs);
+            if (buf && hqr_count(buf, bs) > 0) {
+                n = extract_hqr_buffer(buf, bs, outdir, NULL, 0);
+            } else {
+                fprintf(stderr, "flade: '%s' is not a CD image or an HQR archive\n", src);
+                free(buf);
+                return 1;
+            }
+            free(buf);
+        }
+    }
+    printf("flade: extracted %d file(s) to %s/\n", n, outdir);
+    return 0;
+}
+
 static void usage(void) {
     printf("flade - Adeline movie player (FLA + ACF)\n\n"
            "Usage:\n"
            "  flade <movie.fla|.acf> [options]\n"
            "  flade --cd <image> <name | /path/in/image> [options]\n"
-           "  flade --cd <image> --list\n\n"
+           "  flade --cd <image> --list\n"
+           "  flade --extract <image|HQR> [outdir]   (unpack movies/entries)\n\n"
            "Reads loose movie files or a raw MODE1/2352 CD image (LBA1 LBA.DOT,\n"
            "Time Commando GAME.GOG, ...). With --cd, give a full in-image path such\n"
            "as /SEQUENCE/BIGINTRO.ACF, or a bare name like INTROD to search the disc.\n\n"
@@ -210,6 +378,8 @@ static void usage(void) {
            "  --index <n>      play entry n when the input is an HQR (LBA2 VIDEO.HQR)\n"
            "  --voice <n>      Smacker voice track to mix (1..3 = FR/DE/EN; default first)\n"
            "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
+           "  --extract <src>  unpack a CD image or HQR to [outdir]; smart-named by\n"
+           "                   content + the RESS catalogue (e.g. INTRO.SMK)\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
            "  --volume <f>     master volume 0..1 (default 0.7)\n");
@@ -238,6 +408,7 @@ static void sibling_flasamp(const char *movie, char *out, size_t cap) {
 int main(int argc, char **argv) {
     const char *movie = NULL;
     const char *cd_path = NULL;
+    const char *extract_src = NULL; /* --extract <cd-image|hqr|in-image path> */
     const char *flasamp_path = NULL;
     const char *midi_path = NULL;
     const char *soundfont_path = NULL;
@@ -259,6 +430,8 @@ int main(int argc, char **argv) {
             video_index = atoi(argv[++i]);
         else if (!strcmp(a, "--voice") && i + 1 < argc)
             smk_set_voice(atoi(argv[++i])); /* SMK voice track (1..3 = FR/DE/EN) */
+        else if (!strcmp(a, "--extract") && i + 1 < argc)
+            extract_src = argv[++i];
         else if (!strcmp(a, "--list"))
             do_list = 1;
         else if (!strcmp(a, "--no-audio"))
@@ -275,6 +448,11 @@ int main(int argc, char **argv) {
     }
     if (scale < 1)
         scale = 1;
+
+    /* --extract unpacks a container and exits (the positional arg is the output
+     * directory, default "."). No window, no playback. */
+    if (extract_src)
+        return run_extract(extract_src, cd_path, movie ? movie : ".");
 
     iso9660_t *iso = NULL;
     if (cd_path) {

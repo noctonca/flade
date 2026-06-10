@@ -92,6 +92,8 @@ if [ -x build/flade ]; then
     fcheck "empty file" "$TMP/empty"
     fcheck "garbage file" "$TMP/nomagic"
     fcheck "bad --index" "$TMP/hqr_ff" --index 9999
+    fcheck "extract non-container" --extract "$TMP/nomagic" "$TMP/exout"
+    fcheck "extract garbage HQR" --extract "$TMP/hqr_ff" "$TMP/exout"
 else
     echo "  (build/flade not present; skipping CLI checks - run 'make' first)"
 fi
