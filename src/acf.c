@@ -50,6 +50,13 @@ static u32 diagonal_offsets_2[64] = {
 
 static u32 split_tile_offsets[4] = {0, 4, 320 * 4, 320 * 4 + 4};
 
+/* sign-extend the low 4 bits of v (the original code used (x<<28)>>28, which
+ * is undefined when it shifts into the sign bit) */
+static inline int sx4(int v) {
+    v &= 15;
+    return v >= 8 ? v - 16 : v;
+}
+
 static i32 frame_width = 320;
 static i32 frame_height = 240;
 
@@ -108,31 +115,31 @@ static void zero_motion_decode(void) {
 
 static void short_motion_8_decode(void) {
     i32 value = *unaligned_stream++;
-    i32 dx = (((value & 15) << 28) >> 28);
-    i32 dy = ((value << 24) >> 28);
+    i32 dx = sx4(value);
+    i32 dy = sx4(value >> 4);
     block_copy_8x8(current_tile, previous_tile + (4 + frame_width * 4) + dx + (dy * frame_width));
 }
 
 static void short_motion_4_decode(void) {
     i32 value = *aligned_stream++;
-    i32 dx = (((value & 15) << 28) >> 28);
-    i32 dy = ((value << 24) >> 28);
+    i32 dx = sx4(value);
+    i32 dy = sx4(value >> 4);
     block_copy_4x4(current_tile, previous_tile + 2 + (frame_width * 2) + dx + (dy * frame_width));
 
     value = *aligned_stream++;
-    dx = (((value & 15) << 28) >> 28);
-    dy = ((value << 24) >> 28);
+    dx = sx4(value);
+    dy = sx4(value >> 4);
     block_copy_4x4(current_tile + 4, previous_tile + 2 + (frame_width * 2) + dx + (dy * frame_width) + 4);
 
     value = *aligned_stream++;
-    dx = (((value & 15) << 28) >> 28);
-    dy = ((value << 24) >> 28);
+    dx = sx4(value);
+    dy = sx4(value >> 4);
     block_copy_4x4(current_tile + (frame_width * 4),
                    previous_tile + 2 + (frame_width * 2) + dx + (dy * frame_width) + (frame_width * 4));
 
     value = *aligned_stream++;
-    dx = (((value & 15) << 28) >> 28);
-    dy = ((value << 24) >> 28);
+    dx = sx4(value);
+    dy = sx4(value >> 4);
     block_copy_4x4(current_tile + (frame_width * 4) + 4,
                    previous_tile + 2 + (frame_width * 2) + dx + (dy * frame_width) + (frame_width * 4) + 4);
 }
@@ -755,7 +762,7 @@ int acf_open(acf_t *a, const uint8_t *data, size_t size) {
         a->audio = malloc(alen * sizeof(int16_t));
         if (a->audio) {
             for (size_t i = 0; i < alen; i++)
-                a->audio[i] = (int16_t)(((int)araw[i] - 128) << 8);
+                a->audio[i] = (int16_t)(((int)araw[i] - 128) * 256);
             a->audio_frames = alen / (size_t)a->audio_channels;
         }
     }

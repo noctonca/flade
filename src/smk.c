@@ -68,7 +68,7 @@ static int16_t *normalize_track(const uint8_t *tb, size_t tlen, int tch, int tbd
             if (sf < tframes) {
                 int sc = c < tch ? c : tch - 1;
                 size_t idx = sf * (size_t)tch + (size_t)sc;
-                s = b16 ? (int16_t)(tb[idx * 2] | (tb[idx * 2 + 1] << 8)) : (((int)tb[idx] - 128) << 8);
+                s = b16 ? (int16_t)(tb[idx * 2] | (tb[idx * 2 + 1] << 8)) : (((int)tb[idx] - 128) * 256);
             }
             out[of * (size_t)out_ch + (size_t)c] = (int16_t)s;
         }

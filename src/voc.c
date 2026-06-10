@@ -19,7 +19,7 @@ static int append_u8(int16_t **buf, size_t *cap, size_t *len, const uint8_t *pcm
         *cap = nc;
     }
     for (size_t i = 0; i < n; i++)
-        (*buf)[*len + i] = (int16_t)(((int)pcm[i] - 128) << 8);
+        (*buf)[*len + i] = (int16_t)(((int)pcm[i] - 128) * 256);
     *len += n;
     return 0;
 }
