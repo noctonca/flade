@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "movie.h"
+
 #define FLA_W 320
 #define FLA_H 200
 #define FLA_MAX_EVENTS 16
@@ -54,5 +56,15 @@ int fla_open(fla_t *fla, const uint8_t *data, size_t size);
 
 /* Decode the next frame. Returns 1 if a frame was produced, 0 at end. */
 int fla_step(fla_t *fla);
+
+/* Wrap an in-memory FLA as a generic movie (see movie.h). The adapter owns the
+ * 6-bit->8-bit palette expansion and the scene-fade state machine, so the
+ * frame it hands out is display-ready. Returns 0 on success. */
+int fla_movie_open(movie_t *m, const uint8_t *data, size_t size);
+
+/* Transitional: the underlying FLA decoder behind a movie, so the cue-based
+ * sound-effect path in main can read this frame's sample triggers. Returns
+ * NULL if m is not an FLA. Removed once audio is unified across formats. */
+fla_t *fla_from_movie(movie_t *m);
 
 #endif /* FLADE_FLA_H */

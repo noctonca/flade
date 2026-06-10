@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 the flade authors */
-/* flade - a standalone player for Adeline FLA movies (Little Big Adventure 1),
- * with SDL3 for video and audio. Plays from a loose .fla file or straight out
- * of a raw LBA1 CD image (LBA.DOT). */
+/* flade - a standalone player for Adeline movies, with SDL3 for video and
+ * audio. Plays from a loose movie file or straight out of a raw CD image.
+ * Video is decoded through the generic movie interface (see movie.h); FLA
+ * sound effects still ride the cue-based path until audio is unified. */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <ctype.h>
 
+#include "movie.h"
 #include "fla.h"
 #include "hqr.h"
 #include "voc.h"
@@ -91,7 +93,7 @@ static void list_cb(void *ud, const char *name, uint32_t size) {
 }
 
 static void usage(void) {
-    printf("flade - Adeline FLA movie player\n\n"
+    printf("flade - Adeline movie player\n\n"
            "Usage:\n"
            "  flade <movie.fla> [--flasamp FLASAMP.HQR] [options]\n"
            "  flade --cd <LBA.DOT> <MOVIENAME> [options]\n"
@@ -100,7 +102,7 @@ static void usage(void) {
            "  --cd <image>     read the movie (and samples) from a raw LBA1 CD image\n"
            "  --flasamp <file> FLASAMP.HQR for a loose .fla (default: alongside it)\n"
            "  --list           with --cd, list the movies in the image and exit\n"
-           "  --scale <n>      initial window scale (default 3 => 960x600)\n"
+           "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
            "  --volume <f>     master volume 0..1 (default 0.7)\n");
 }
@@ -204,21 +206,25 @@ int main(int argc, char **argv) {
         }
     }
 
-    fla_t fla;
-    if (fla_open(&fla, movie_buf, movie_size) != 0) {
-        fprintf(stderr, "flade: '%s' is not a V1.3 FLA movie\n", movie);
+    movie_t mv;
+    if (movie_open(&mv, movie_buf, movie_size, movie) != 0) {
+        fprintf(stderr, "flade: '%s' is not a movie I can play\n", movie);
         free(movie_buf);
         if (iso)
             iso_close(iso);
         return 1;
     }
-    printf("flade: %s  %ux%u  %u frames  %d fps\n", movie, fla.width, fla.height,
-           fla.num_frames, fla.speed + 1);
+    printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv.width, mv.height,
+           mv.num_frames, mv.fps);
+
+    /* Transitional: FLA sound effects still come from the cue arrays. */
+    fla_t *cues = fla_from_movie(&mv);
 
     /* ----- SDL setup ------------------------------------------------------ */
     Uint32 init_flags = SDL_INIT_VIDEO | (no_audio ? 0 : SDL_INIT_AUDIO);
     if (!SDL_Init(init_flags)) {
         fprintf(stderr, "flade: SDL_Init failed: %s\n", SDL_GetError());
+        mv.close(&mv);
         free(movie_buf);
         if (iso)
             iso_close(iso);
@@ -227,24 +233,25 @@ int main(int argc, char **argv) {
 
     SDL_Window *win = NULL;
     SDL_Renderer *ren = NULL;
-    if (!SDL_CreateWindowAndRenderer("flade", FLA_W * scale, FLA_H * scale,
+    if (!SDL_CreateWindowAndRenderer("flade", mv.width * scale, mv.height * scale,
                                      SDL_WINDOW_RESIZABLE, &win, &ren)) {
         fprintf(stderr, "flade: window creation failed: %s\n", SDL_GetError());
         SDL_Quit();
+        mv.close(&mv);
         free(movie_buf);
         if (iso)
             iso_close(iso);
         return 1;
     }
     SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
-                                         SDL_TEXTUREACCESS_STREAMING, FLA_W, FLA_H);
+                                         SDL_TEXTUREACCESS_STREAMING, mv.width, mv.height);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
-    /* ----- audio + sample bank (entirely optional) ------------------------ */
+    /* ----- audio + sample bank (FLA cue path; entirely optional) ---------- */
     sample_bank bank;
     int have_audio = 0;
     memset(&bank, 0, sizeof(bank));
-    if (!no_audio) {
+    if (!no_audio && cues) {
         uint8_t *hqr = NULL;
         size_t hqr_size = 0;
         int explicit_req = 0;
@@ -280,23 +287,21 @@ int main(int argc, char **argv) {
         printf("flade: no samples - playing video only\n");
 
     /* ----- playback loop -------------------------------------------------- */
-    Uint64 period_ns = (Uint64)(1000000000.0 / (fla.speed + 1));
     Uint64 next = SDL_GetTicksNS();
-    float fade = 1.0f; /* 0..1 brightness for scene fades */
-    int fade_mode = 0; /* 0 stable, 1 out, 2 holding black, 3 in */
     int quit = 0;
+    movie_frame fr;
 
-    while (!quit && fla_step(&fla)) {
-        /* sample cues */
-        if (have_audio) {
-            for (int i = 0; i < fla.n_stops; i++) {
-                if (fla.stops[i] < 0)
+    while (!quit && mv.step(&mv, &fr)) {
+        /* FLA sound-effect cues */
+        if (have_audio && cues) {
+            for (int i = 0; i < cues->n_stops; i++) {
+                if (cues->stops[i] < 0)
                     audio_stop_all();
                 else
-                    audio_stop(fla.stops[i]);
+                    audio_stop(cues->stops[i]);
             }
-            for (int i = 0; i < fla.n_plays; i++) {
-                fla_sample_play *s = &fla.plays[i];
+            for (int i = 0; i < cues->n_plays; i++) {
+                fla_sample_play *s = &cues->plays[i];
                 const voc_t *v = bank_get(&bank, s->num);
                 if (!v)
                     continue;
@@ -311,59 +316,31 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* scene-fade state machine */
-        if (fla.fade_out && fade_mode == 0)
-            fade_mode = 1;
-        if (fade_mode == 1) {
-            fade -= 0.34f;
-            if (fade <= 0.0f) {
-                fade = 0.0f;
-                fade_mode = 2;
-            }
-        } else if (fade_mode == 2) {
-            if (fla.palette_dirty && !fla.fade_out)
-                fade_mode = 3;
-        } else if (fade_mode == 3) {
-            fade += 0.20f;
-            if (fade >= 1.0f) {
-                fade = 1.0f;
-                fade_mode = 0;
-            }
-        }
-
-        /* palette -> RGBA */
+        /* palette -> RGBA (the decoder hands us a display-ready palette) */
         uint32_t lut[256];
         for (int c = 0; c < 256; c++) {
-            uint8_t r = fla.palette[c * 3 + 0];
-            uint8_t g = fla.palette[c * 3 + 1];
-            uint8_t b = fla.palette[c * 3 + 2];
-            r |= r >> 6; /* expand 6-bit-derived values to full 8-bit */
-            g |= g >> 6;
-            b |= b >> 6;
-            if (fade < 1.0f) {
-                r = (uint8_t)(r * fade);
-                g = (uint8_t)(g * fade);
-                b = (uint8_t)(b * fade);
-            }
+            uint8_t r = fr.palette[c * 3 + 0];
+            uint8_t g = fr.palette[c * 3 + 1];
+            uint8_t b = fr.palette[c * 3 + 2];
             lut[c] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
         }
 
         void *pixels;
         int pitch;
         if (SDL_LockTexture(tex, NULL, &pixels, &pitch)) {
-            for (int y = 0; y < FLA_H; y++) {
+            for (int y = 0; y < mv.height; y++) {
                 uint32_t *row = (uint32_t *)((uint8_t *)pixels + (size_t)y * pitch);
-                const uint8_t *src = fla.frame + (size_t)y * FLA_W;
-                for (int x = 0; x < FLA_W; x++)
+                const uint8_t *src = fr.pixels + (size_t)y * mv.width;
+                for (int x = 0; x < mv.width; x++)
                     row[x] = lut[src[x]];
             }
             SDL_UnlockTexture(tex);
         }
 
-        /* present, letterboxed to 8:5 */
+        /* present, letterboxed to the movie's aspect */
         int ow, oh;
         SDL_GetRenderOutputSize(ren, &ow, &oh);
-        float aspect = (float)FLA_W / (float)FLA_H;
+        float aspect = (float)mv.width / (float)mv.height;
         SDL_FRect dst;
         if ((float)ow / (float)oh > aspect) {
             dst.h = (float)oh;
@@ -397,8 +374,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* pace */
-        next += period_ns;
+        /* pace by the frame's own duration */
+        next += (Uint64)(fr.duration * 1e9);
         Uint64 now = SDL_GetTicksNS();
         if (now < next)
             SDL_DelayNS(next - now);
@@ -420,6 +397,7 @@ int main(int argc, char **argv) {
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
+    mv.close(&mv);
     free(movie_buf);
     if (iso)
         iso_close(iso);
