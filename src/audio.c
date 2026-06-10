@@ -197,6 +197,11 @@ void audio_stream_set_paused(int paused) {
         SDL_ResumeAudioStreamDevice(g_music);
 }
 
+void audio_stream_set_gain(float gain) {
+    if (g_music)
+        SDL_SetAudioStreamGain(g_music, gain);
+}
+
 void audio_stream_stop(void) {
     if (g_music) {
         SDL_DestroyAudioStream(g_music);

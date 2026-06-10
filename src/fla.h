@@ -45,6 +45,8 @@ typedef struct {
     /* per-frame outputs, refreshed by each fla_step() */
     int palette_dirty;
     int fade_out;
+    int midi_play; /* FLA_INFO Info==1: start the cutscene MIDI (XMI track 26) */
+    int midi_fade; /* FLA_INFO Info==4: fade the cutscene MIDI out */
     fla_sample_play plays[FLA_MAX_EVENTS];
     int n_plays;
     int stops[FLA_MAX_EVENTS];

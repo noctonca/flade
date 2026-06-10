@@ -3,7 +3,8 @@
 A small standalone player for **Adeline movies**, rendered with **SDL3**. It
 plays two of Adeline's cutscene formats:
 
-- **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects;
+- **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects
+  (and the cutscene MIDI flute in FLUTE2/GLASS2, given a soundfont);
 - **ACF / XCF**: *Time Commando* (1996), an 8x8-tile codec with embedded audio.
 
 It reads loose movie files or pulls them straight out of a raw CD image (LBA1
@@ -45,7 +46,14 @@ From a loose movie file:
 ./build/flade ACTIVISI.ACF
 ```
 
-Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`.
+A couple of FLA cutscenes (FLUTE2, GLASS2) are scored with a MIDI flute. To
+hear it you need `MIDI_MI.HQR` (read automatically from `--cd`, or pass
+`--midi MIDI_MI.HQR`) and a General MIDI soundfont (a system `.sf2` is found
+automatically, or pass `--soundfont my.sf2`). Steam/GOG re-releases ship MP3
+music instead of the MIDI, so the flute is only available from the CD data.
+
+Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`,
+`--midi <MIDI_MI.HQR>`, `--soundfont <.sf2>`.
 
 Transport (every decoded frame is cached, so rewind and scrub are instant and
 frame-accurate; audio plays during normal forward and is muted for reverse / FF
@@ -71,7 +79,8 @@ frame-accurate; audio plays during normal forward and is muted for reverse / FF
 | `iso9660.c` | read / list / walk a raw (2352) or cooked (2048) CD image |
 | `hqr.c` | HQR archive table + LZSS/LZMIT (`ExpandLZ`) expansion |
 | `voc.c` | Creative Voice File → signed-16 mono PCM (FLA samples) |
-| `audio.c` | SDL3 software mixer (FLA sound-effect cues) |
+| `midi.c` | render FLA cutscene MIDI (XMI → SMF → TinySoundFont) |
+| `audio.c` | SDL3 software mixer (FLA cues) + streaming channel (ACF/MIDI) |
 | `main.c` | input source, window/texture, generic play loop |
 
 ### FLA format, briefly
@@ -114,7 +123,10 @@ licence:
   implementation of the key-frame and delta painters;
 - the ACF/XCF tile decoder (`src/acf.c`) is adapted from the GPLv2 Time
   Commando player (`timeco/src/acf.c`, LBALab), itself based on the
-  Defence-Force ACF2PCX notes and the Adeline `DEC_XCF` source.
+  Defence-Force ACF2PCX notes and the Adeline `DEC_XCF` source;
+- MIDI uses vendored `src/xmidi.c` (XMI→SMF, GPLv2, from TwinEngine /
+  ScummVM / Exult), `src/tml.h` (MIDI loader, zlib) and `src/tsf.h`
+  (TinySoundFont synth, MIT), both by Bernhard Schelling.
 
 The remaining code (CD-image reader, VOC decoder, SDL3 video/audio, CLI) is
 original to this project, but because the parts above are derived from GPLv2

@@ -141,6 +141,8 @@ int fla_step(fla_t *fla) {
     fla->n_stops = 0;
     fla->palette_dirty = 0;
     fla->fade_out = 0;
+    fla->midi_play = 0;
+    fla->midi_fade = 0;
 
     const uint8_t *send = stream + block_size;
     size_t p = 0;
@@ -162,12 +164,18 @@ int fla_step(fla_t *fla) {
             fla->palette_dirty = 1;
             break;
         }
-        case OP_INFO:
-            /* Only Info==2 is a fade-to-black; 1/3/4 drive MIDI or a flag and
-             * must not fade (treating them all as fades dips the picture). */
-            if (bs >= 2 && rd16(pay) == 2)
+        case OP_INFO: {
+            /* Info: 1=play MIDI, 2=fade-to-black, 3=flag, 4=fade MIDI. Only 2
+             * is a visual fade; 1/4 drive the cutscene music. */
+            int info = (bs >= 2) ? rd16(pay) : 0;
+            if (info == 2)
                 fla->fade_out = 1;
+            else if (info == 1)
+                fla->midi_play = 1;
+            else if (info == 4)
+                fla->midi_fade = 1;
             break;
+        }
         case OP_PLAY_SAMPLE:
             if (fla->n_plays < FLA_MAX_EVENTS && bs >= 9) {
                 fla_sample_play *s = &fla->plays[fla->n_plays++];

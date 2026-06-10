@@ -27,6 +27,7 @@ int audio_active(void); /* number of channels still sounding */
 int audio_stream_start(const int16_t *pcm, size_t frames, int rate, int channels,
                        size_t start_frame, float volume); /* 0 on success */
 void audio_stream_set_paused(int paused);
+void audio_stream_set_gain(float gain); /* for fades */
 void audio_stream_stop(void);
 
 #endif /* FLADE_AUDIO_H */

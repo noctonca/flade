@@ -18,9 +18,14 @@ add_executable(flade
   src/voc.c
   src/fla.c
   src/acf.c
-  src/audio.c)
+  src/audio.c
+  src/midi.c
+  src/xmidi.c)
 
 target_link_libraries(flade PRIVATE SDL3::SDL3)
+if(NOT WIN32)
+  target_link_libraries(flade PRIVATE m) # tsf/midi math
+endif()
 
 # Headless verification harness for the SDL-free decoder core (no SDL needed).
 add_executable(fladump

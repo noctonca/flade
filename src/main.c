@@ -15,6 +15,7 @@
 #include "movie.h"
 #include "player.h"
 #include "fla.h"
+#include "midi.h"
 #include "hqr.h"
 #include "voc.h"
 #include "audio.h"
@@ -142,6 +143,8 @@ static void usage(void) {
            "Options:\n"
            "  --cd <image>     read the movie (and FLA samples) from a CD image\n"
            "  --flasamp <file> FLASAMP.HQR for a loose FLA (default: alongside it)\n"
+           "  --midi <file>    MIDI_MI.HQR for FLA cutscene music (default: from --cd)\n"
+           "  --soundfont <f>  .sf2 for MIDI (default: a system soundfont)\n"
            "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
@@ -172,6 +175,8 @@ int main(int argc, char **argv) {
     const char *movie = NULL;
     const char *cd_path = NULL;
     const char *flasamp_path = NULL;
+    const char *midi_path = NULL;
+    const char *soundfont_path = NULL;
     int do_list = 0, no_audio = 0, scale = 3;
     float volume = 0.7f;
 
@@ -181,6 +186,10 @@ int main(int argc, char **argv) {
             cd_path = argv[++i];
         else if (!strcmp(a, "--flasamp") && i + 1 < argc)
             flasamp_path = argv[++i];
+        else if (!strcmp(a, "--midi") && i + 1 < argc)
+            midi_path = argv[++i];
+        else if (!strcmp(a, "--soundfont") && i + 1 < argc)
+            soundfont_path = argv[++i];
         else if (!strcmp(a, "--list"))
             do_list = 1;
         else if (!strcmp(a, "--no-audio"))
@@ -224,6 +233,7 @@ int main(int argc, char **argv) {
     uint8_t *movie_buf = NULL;
     size_t movie_size = 0;
     char flasamp_in_image[1024] = {0}; /* FLASAMP.HQR beside an in-image FLA */
+    char midi_in_image[1024] = {0};    /* MIDI_MI.HQR one level up from it */
     if (iso) {
         char inpath[1024];
         if (movie[0] == '/') {
@@ -249,6 +259,21 @@ int main(int argc, char **argv) {
         const char *sl = strrchr(inpath, '/');
         size_t dl = sl ? (size_t)(sl - inpath) + 1 : 0;
         snprintf(flasamp_in_image, sizeof(flasamp_in_image), "%.*sFLASAMP.HQR", (int)dl, inpath);
+        /* MIDI_MI.HQR sits one directory up (e.g. LBA/MIDI_MI.HQR for LBA/FLA/X.FLA) */
+        char tmp[1024];
+        snprintf(tmp, sizeof(tmp), "%s", inpath);
+        char *s1 = strrchr(tmp, '/');
+        if (s1) {
+            *s1 = 0;
+            char *s2 = strrchr(tmp, '/');
+            if (s2)
+                s2[1] = 0;
+            else
+                tmp[0] = 0;
+        } else {
+            tmp[0] = 0;
+        }
+        snprintf(midi_in_image, sizeof(midi_in_image), "%sMIDI_MI.HQR", tmp);
     } else {
         movie_buf = read_file(movie, &movie_size);
         if (!movie_buf) {
@@ -340,6 +365,37 @@ int main(int argc, char **argv) {
     if (!no_audio && !have_audio && !have_stream)
         printf("flade: no audio track - playing video only\n");
 
+    /* ----- FLA cutscene MIDI (the flute, XMI track 26) -------------------- *
+     * Only some FLAs use it (FLUTE2/GLASS2). Needs MIDI_MI.HQR (in the CD
+     * image, or --midi) and a soundfont (--soundfont or a system .sf2). The
+     * rendered track is pre-mixed once and played on the streaming channel. */
+    int16_t *midi_pcm = NULL;
+    size_t midi_frames = 0;
+    int midi_rate = 44100;
+    int have_midi = 0;
+    if (!no_audio && cues) {
+        uint8_t *mh = NULL;
+        size_t mh_sz = 0;
+        if (midi_path)
+            mh = read_file(midi_path, &mh_sz);
+        else if (iso && midi_in_image[0])
+            iso_read(iso, midi_in_image, &mh, &mh_sz);
+        /* (loose FLAs without --midi: skipped - e.g. Steam ships MP3s, no HQR) */
+        if (mh && hqr_count(mh, mh_sz) > 26 && midi_init(soundfont_path) == 0) {
+            uint8_t *xmi = NULL;
+            size_t xmi_sz = 0;
+            if (hqr_entry(mh, mh_sz, 26, &xmi, &xmi_sz) == 0) {
+                if (midi_render_xmi(xmi, xmi_sz, midi_rate, &midi_pcm, &midi_frames) == 0)
+                    have_midi = 1;
+                free(xmi);
+            }
+        } else if (mh && !midi_available()) {
+            fprintf(stderr, "flade: found MIDI_MI.HQR but no soundfont; "
+                            "pass --soundfont <.sf2> for cutscene music\n");
+        }
+        free(mh);
+    }
+
     /* ----- playback loop (cached, so rewind / scrub are instant) ---------- */
     player_t *pl = player_open(&mv);
     if (!pl)
@@ -353,6 +409,9 @@ int main(int argc, char **argv) {
     int have_frame = 0;
     int was_audio_active = 0; /* ACF stream was playing last iteration */
     int seeked = 0;           /* a key jumped the playhead this frame */
+    int midi_playing = 0;     /* FLA cutscene MIDI is sounding */
+    int midi_fading = 0;
+    float midi_gain = 1.0f;
     movie_frame fr;
     Uint64 prev = SDL_GetTicksNS();
 
@@ -400,6 +459,17 @@ int main(int argc, char **argv) {
                     audio_play(s->num, v->pcm, v->frames, v->rate, s->repeat, gl, gr);
                 }
             }
+            /* FLA cutscene MIDI cues (FLUTE2/GLASS2): play / fade the flute */
+            if (have_midi && fresh && normal_fwd) {
+                if (cues->midi_play) {
+                    audio_stream_start(midi_pcm, midi_frames, midi_rate, 2, 0, volume);
+                    midi_playing = 1;
+                    midi_fading = 0;
+                    midi_gain = 1.0f;
+                }
+                if (cues->midi_fade && midi_playing)
+                    midi_fading = 1;
+            }
         } else if (player_complete(pl) && player_count(pl) > 0) {
             /* reached the end: hold on the last frame (rewind still works) */
             idx = player_count(pl) - 1;
@@ -428,6 +498,27 @@ int main(int argc, char **argv) {
                 audio_stream_stop();
             }
             was_audio_active = audio_active;
+        }
+
+        /* FLA MIDI transport: mute on any trick mode, ramp the fade, follow pause */
+        if (midi_playing) {
+            int trick = dir <= 0 || speed < 0.99 || speed > 1.01 || seeked;
+            if (trick) {
+                audio_stream_stop();
+                midi_playing = 0;
+                midi_fading = 0;
+            } else if (midi_fading) {
+                midi_gain -= (float)dt; /* ~1s linear fade */
+                if (midi_gain <= 0.0f) {
+                    audio_stream_stop();
+                    midi_playing = 0;
+                    midi_fading = 0;
+                } else {
+                    audio_stream_set_gain(midi_gain);
+                }
+            }
+            if (midi_playing)
+                audio_stream_set_paused(paused);
         }
         seeked = 0;
 
@@ -551,6 +642,8 @@ int main(int argc, char **argv) {
 
     /* ----- teardown ------------------------------------------------------- */
     audio_stream_stop();
+    midi_shutdown();
+    free(midi_pcm);
     if (have_audio) {
         audio_stop_all();
         audio_shutdown();
