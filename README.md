@@ -46,7 +46,19 @@ From a loose movie file:
 ```
 
 Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`.
-Keys: `Esc`/`Q` quit, `Space`/`Enter` skip, `F` fullscreen.
+
+Transport (every decoded frame is cached, so rewind and scrub are instant and
+frame-accurate):
+
+| key | action |
+|---|---|
+| `Space` | pause / play |
+| `←` / `→` | seek back / forward ~5s |
+| `,` / `.` | step one frame back / forward |
+| `R` | reverse direction (play backwards) |
+| `-` / `=` | slower / faster (0.125x .. 8x) |
+| `Home` | restart |
+| `F` | fullscreen, `Esc`/`Q` quit |
 
 ## How it works
 

@@ -13,6 +13,7 @@
 #include <ctype.h>
 
 #include "movie.h"
+#include "player.h"
 #include "fla.h"
 #include "hqr.h"
 #include "voc.h"
@@ -336,55 +337,94 @@ int main(int argc, char **argv) {
     if (!no_audio && !have_audio)
         printf("flade: no samples - playing video only\n");
 
-    /* ----- playback loop -------------------------------------------------- */
-    Uint64 next = SDL_GetTicksNS();
+    /* ----- playback loop (cached, so rewind / scrub are instant) ---------- */
+    player_t *pl = player_open(&mv);
+    if (!pl)
+        fprintf(stderr, "flade: out of memory\n");
+
+    double pos = 0.0;   /* current frame, fractional */
+    double speed = 1.0; /* playback rate multiplier */
+    int dir = 1;        /* +1 forward, -1 reverse */
+    int paused = 0;
     int quit = 0;
+    int have_frame = 0;
     movie_frame fr;
+    Uint64 prev = SDL_GetTicksNS();
 
-    while (!quit && mv.step(&mv, &fr)) {
-        /* FLA sound-effect cues */
-        if (have_audio && cues) {
-            for (int i = 0; i < cues->n_stops; i++) {
-                if (cues->stops[i] < 0)
-                    audio_stop_all();
-                else
-                    audio_stop(cues->stops[i]);
-            }
-            for (int i = 0; i < cues->n_plays; i++) {
-                fla_sample_play *s = &cues->plays[i];
-                const voc_t *v = bank_get(&bank, s->num);
-                if (!v)
-                    continue;
-                float gl = 1.0f, gr = 1.0f;
-                if (s->balance_l || s->balance_r) {
-                    gl = s->balance_l / 63.0f;
-                    gr = s->balance_r / 63.0f;
-                    if (gl > 1.0f) gl = 1.0f;
-                    if (gr > 1.0f) gr = 1.0f;
+    while (!quit && pl) {
+        Uint64 now = SDL_GetTicksNS();
+        double dt = (double)(now - prev) / 1e9;
+        prev = now;
+        if (dt > 0.25)
+            dt = 0.25; /* don't lurch after a stall */
+
+        if (!paused)
+            pos += (double)dir * speed * dt * mv.fps;
+        if (pos < 0.0) {
+            pos = 0.0;
+            paused = 1;
+        }
+
+        int idx = (int)pos;
+        int before = player_count(pl);
+        if (player_get(pl, idx, &fr)) {
+            have_frame = 1;
+            /* fire FLA sound-effect cues only for a frame freshly decoded
+             * during normal forward play (rewind / scrub / FF stay silent) */
+            int fresh = player_count(pl) == before + 1 && idx == player_count(pl) - 1;
+            int normal_fwd = dir > 0 && !paused && speed > 0.99 && speed < 1.01;
+            if (have_audio && cues && fresh && normal_fwd) {
+                for (int i = 0; i < cues->n_stops; i++) {
+                    if (cues->stops[i] < 0)
+                        audio_stop_all();
+                    else
+                        audio_stop(cues->stops[i]);
                 }
-                audio_play(s->num, v->pcm, v->frames, v->rate, s->repeat, gl, gr);
+                for (int i = 0; i < cues->n_plays; i++) {
+                    fla_sample_play *s = &cues->plays[i];
+                    const voc_t *v = bank_get(&bank, s->num);
+                    if (!v)
+                        continue;
+                    float gl = 1.0f, gr = 1.0f;
+                    if (s->balance_l || s->balance_r) {
+                        gl = s->balance_l / 63.0f;
+                        gr = s->balance_r / 63.0f;
+                        if (gl > 1.0f) gl = 1.0f;
+                        if (gr > 1.0f) gr = 1.0f;
+                    }
+                    audio_play(s->num, v->pcm, v->frames, v->rate, s->repeat, gl, gr);
+                }
             }
+        } else if (player_complete(pl) && player_count(pl) > 0) {
+            /* reached the end: hold on the last frame (rewind still works) */
+            idx = player_count(pl) - 1;
+            pos = (double)idx;
+            paused = 1;
+            have_frame = player_get(pl, idx, &fr);
+        } else if (!have_frame) {
+            fprintf(stderr, "flade: no frames decoded\n");
+            break;
         }
 
-        /* palette -> RGBA (the decoder hands us a display-ready palette) */
-        uint32_t lut[256];
-        for (int c = 0; c < 256; c++) {
-            uint8_t r = fr.palette[c * 3 + 0];
-            uint8_t g = fr.palette[c * 3 + 1];
-            uint8_t b = fr.palette[c * 3 + 2];
-            lut[c] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
-        }
-
-        void *pixels;
-        int pitch;
-        if (SDL_LockTexture(tex, NULL, &pixels, &pitch)) {
-            for (int y = 0; y < mv.height; y++) {
-                uint32_t *row = (uint32_t *)((uint8_t *)pixels + (size_t)y * pitch);
-                const uint8_t *src = fr.pixels + (size_t)y * mv.width;
-                for (int x = 0; x < mv.width; x++)
-                    row[x] = lut[src[x]];
+        if (have_frame) {
+            uint32_t lut[256];
+            for (int c = 0; c < 256; c++) {
+                uint8_t r = fr.palette[c * 3 + 0];
+                uint8_t g = fr.palette[c * 3 + 1];
+                uint8_t b = fr.palette[c * 3 + 2];
+                lut[c] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
             }
-            SDL_UnlockTexture(tex);
+            void *pixels;
+            int pitch;
+            if (SDL_LockTexture(tex, NULL, &pixels, &pitch)) {
+                for (int y = 0; y < mv.height; y++) {
+                    uint32_t *row = (uint32_t *)((uint8_t *)pixels + (size_t)y * pitch);
+                    const uint8_t *src = fr.pixels + (size_t)y * mv.width;
+                    for (int x = 0; x < mv.width; x++)
+                        row[x] = lut[src[x]];
+                }
+                SDL_UnlockTexture(tex);
+            }
         }
 
         /* present, letterboxed to the movie's aspect */
@@ -406,32 +446,78 @@ int main(int argc, char **argv) {
         SDL_RenderTexture(ren, tex, NULL, &dst);
         SDL_RenderPresent(ren);
 
-        /* input */
+        /* input / transport */
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT)
+            if (e.type == SDL_EVENT_QUIT) {
                 quit = 1;
-            else if (e.type == SDL_EVENT_KEY_DOWN) {
-                SDL_Keycode k = e.key.key;
-                if (k == SDLK_ESCAPE || k == SDLK_Q)
+            } else if (e.type == SDL_EVENT_KEY_DOWN) {
+                switch (e.key.key) {
+                case SDLK_ESCAPE:
+                case SDLK_Q:
+                case SDLK_RETURN:
                     quit = 1;
-                else if (k == SDLK_SPACE || k == SDLK_RETURN)
-                    quit = 1; /* skip to end */
-                else if (k == SDLK_F) {
+                    break;
+                case SDLK_SPACE: /* pause / play */
+                    paused = !paused;
+                    if (paused)
+                        audio_stop_all();
+                    break;
+                case SDLK_R: /* reverse direction */
+                    dir = -dir;
+                    audio_stop_all();
+                    break;
+                case SDLK_LEFT: /* seek back ~5s */
+                    pos -= 5.0 * mv.fps;
+                    if (pos < 0.0)
+                        pos = 0.0;
+                    audio_stop_all();
+                    break;
+                case SDLK_RIGHT: /* seek forward ~5s */
+                    pos += 5.0 * mv.fps;
+                    audio_stop_all();
+                    break;
+                case SDLK_COMMA: /* step one frame back */
+                    paused = 1;
+                    pos -= 1.0;
+                    if (pos < 0.0)
+                        pos = 0.0;
+                    break;
+                case SDLK_PERIOD: /* step one frame forward */
+                    paused = 1;
+                    pos += 1.0;
+                    break;
+                case SDLK_MINUS: /* slower */
+                    speed *= 0.5;
+                    if (speed < 0.125)
+                        speed = 0.125;
+                    break;
+                case SDLK_EQUALS:
+                case SDLK_PLUS: /* faster */
+                    speed *= 2.0;
+                    if (speed > 8.0)
+                        speed = 8.0;
+                    break;
+                case SDLK_HOME:
+                case SDLK_BACKSPACE: /* restart */
+                    pos = 0.0;
+                    dir = 1;
+                    audio_stop_all();
+                    break;
+                case SDLK_F: {
                     bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
                     SDL_SetWindowFullscreen(win, !fs);
+                    break;
+                }
+                default:
+                    break;
                 }
             }
         }
 
-        /* pace by the frame's own duration */
-        next += (Uint64)(fr.duration * 1e9);
-        Uint64 now = SDL_GetTicksNS();
-        if (now < next)
-            SDL_DelayNS(next - now);
-        else
-            next = now;
+        SDL_DelayNS(6 * 1000000); /* ~165 Hz: responsive input, low CPU */
     }
+    player_close(pl);
 
     /* ----- teardown ------------------------------------------------------- */
     if (have_audio) {

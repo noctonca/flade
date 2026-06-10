@@ -12,6 +12,7 @@ find_package(SDL3 CONFIG REQUIRED)
 add_executable(flade
   src/main.c
   src/movie.c
+  src/player.c
   src/iso9660.c
   src/hqr.c
   src/voc.c
