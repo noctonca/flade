@@ -225,10 +225,10 @@ TMLDEF tml_message* tml_load_filename(const char* filename)
 #endif
 
 struct tml_stream_memory { const char* buffer; unsigned int total, pos; };
-static int tml_stream_memory_read(struct tml_stream_memory* m, void* ptr, unsigned int size) { if (size > m->total - m->pos) size = m->total - m->pos; TML_MEMCPY(ptr, m->buffer+m->pos, size); m->pos += size; return size; }
+static int tml_stream_memory_read(void* data, void* ptr, unsigned int size) { struct tml_stream_memory* m = (struct tml_stream_memory*)data; if (size > m->total - m->pos) size = m->total - m->pos; TML_MEMCPY(ptr, m->buffer+m->pos, size); m->pos += size; return size; }
 TMLDEF struct tml_message* tml_load_memory(const void* buffer, int size)
 {
-	struct tml_stream stream = { TML_NULL, (int(*)(void*,void*,unsigned int))&tml_stream_memory_read };
+	struct tml_stream stream = { TML_NULL, &tml_stream_memory_read };
 	struct tml_stream_memory f = { 0, 0, 0 };
 	f.buffer = (const char*)buffer;
 	f.total = size;

@@ -310,6 +310,9 @@ static smk smk_open_generic(const unsigned char m, union smk_read_t fp, unsigned
 			s->audio[temp_l].exists = 1;
 
 			/* and for all audio tracks */
+			/* flade: reject an absurd audio buffer size from a forged header */
+			if (s->audio[temp_l].max_buffer < 0 || s->audio[temp_l].max_buffer > (64L << 20))
+				goto error;
 			smk_malloc(s->audio[temp_l].buffer, s->audio[temp_l].max_buffer);
 
 			if (temp_u & 0x80000000)
@@ -358,6 +361,9 @@ static smk smk_open_generic(const unsigned char m, union smk_read_t fp, unsigned
 	/* HuffmanTrees
 		We know the sizes already: read and assemble into
 		something actually parse-able at run-time */
+	/* flade: reject an absurd tree size from a forged header */
+	if (tree_size > (64L << 20))
+		goto error;
 	smk_malloc(hufftree_chunk,tree_size);
 	smk_read(hufftree_chunk,tree_size);
 

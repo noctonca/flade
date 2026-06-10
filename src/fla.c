@@ -160,20 +160,25 @@ int fla_step(fla_t *fla) {
         p += 4;
         const uint8_t *pay = stream + p;
         const uint8_t *pay_end = (p + bs <= block_size) ? pay + bs : send;
+        size_t avail = (size_t)(pay_end - pay); /* payload bytes actually present */
 
         switch (opcode - 1) {
         case OP_PALETTE: {
-            int num = rd16s(pay);
-            int start = rd16s(pay + 2);
-            if (start >= 0 && num > 0 && (start + num) * 3 <= 256 * 3)
-                memcpy(fla->palette + start * 3, pay + 4, (size_t)num * 3);
+            if (avail >= 4) {
+                int num = rd16s(pay);
+                int start = rd16s(pay + 2);
+                /* bound both the palette destination and the payload source */
+                if (start >= 0 && num > 0 && (start + num) * 3 <= 256 * 3 &&
+                    4 + (size_t)num * 3 <= avail)
+                    memcpy(fla->palette + start * 3, pay + 4, (size_t)num * 3);
+            }
             fla->palette_dirty = 1;
             break;
         }
         case OP_INFO: {
             /* Info: 1=play MIDI, 2=fade-to-black, 3=flag, 4=fade MIDI. Only 2
              * is a visual fade; 1/4 drive the cutscene music. */
-            int info = (bs >= 2) ? rd16(pay) : 0;
+            int info = (avail >= 2) ? rd16(pay) : 0;
             if (info == 2)
                 fla->fade_out = 1;
             else if (info == 1)
@@ -183,7 +188,7 @@ int fla_step(fla_t *fla) {
             break;
         }
         case OP_PLAY_SAMPLE:
-            if (fla->n_plays < FLA_MAX_EVENTS && bs >= 9) {
+            if (fla->n_plays < FLA_MAX_EVENTS && avail >= 9) {
                 fla_sample_play *s = &fla->plays[fla->n_plays++];
                 s->num = rd16s(pay);
                 s->freq = rd16s(pay + 2);
@@ -193,7 +198,7 @@ int fla_step(fla_t *fla) {
             }
             break;
         case OP_STOP_SAMPLE:
-            if (fla->n_stops < FLA_MAX_EVENTS && bs >= 2)
+            if (fla->n_stops < FLA_MAX_EVENTS && avail >= 2)
                 fla->stops[fla->n_stops++] = rd16s(pay);
             break;
         case OP_DELTA_FRAME:

@@ -18,8 +18,9 @@ int hqr_count(const uint8_t *hqr, size_t hqrsize);
  * Returns 0 on success. */
 int hqr_entry(const uint8_t *hqr, size_t hqrsize, int index, uint8_t **out, size_t *outsize);
 
-/* LBA HQR LZSS expander (a faithful port of the engine's ExpandLZ).
- * min_match is the HQR type + 1. */
-void expand_lz(uint8_t *dst, const uint8_t *src, uint32_t decomp_size, uint32_t min_match);
+/* LBA HQR LZSS expander (a port of the engine's ExpandLZ, with bounds added).
+ * src_size bounds the compressed input; min_match is the HQR type + 1. */
+void expand_lz(uint8_t *dst, const uint8_t *src, uint32_t src_size, uint32_t decomp_size,
+               uint32_t min_match);
 
 #endif /* FLADE_HQR_H */

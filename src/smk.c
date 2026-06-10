@@ -101,16 +101,20 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
                 if (a && asz)
                     append_bytes(&tbuf[t], &tlen[t], &tcap[t], a, asz);
             }
-        if (f + 1 < c->frame_count)
-            smk_next(h);
+        if (f + 1 < c->frame_count && smk_next(h) == SMK_ERROR)
+            break; /* stream exhausted early (e.g. a forged frame count) */
     }
 
+    /* Clamp sample rates to a sane PCM range: a forged rate (huge or tiny)
+     * would otherwise blow up out_frames below and request a giant buffer. */
     int out_ch = 1, out_rate = 0;
     for (int t = 0; t < 7; t++)
         if (tlen[t]) {
             int tch = ch[t] ? ch[t] : 1;
             if (tch > out_ch)
                 out_ch = tch;
+            if (rate[t] < 2000 || rate[t] > 48000)
+                rate[t] = 22050;
             if ((int)rate[t] > out_rate)
                 out_rate = (int)rate[t];
         }
@@ -126,7 +130,8 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
             if (of > out_frames)
                 out_frames = of;
         }
-    if (out_frames == 0) {
+    /* bail on absurd audio length (~12 min at 22 kHz is far past any cinematic) */
+    if (out_frames == 0 || out_frames > 16u * 1024 * 1024) {
         for (int t = 0; t < 7; t++)
             free(tbuf[t]);
         return;
@@ -216,6 +221,17 @@ static void smk_movie_close(movie_t *m) {
 }
 
 int smk_movie_open(movie_t *m, const uint8_t *data, size_t size) {
+    /* Pre-validate the header before libsmacker allocates from it: a forged
+     * width/height/frame-count would otherwise drive a multi-GB allocation
+     * inside smk_open_memory. Smacker header: magic[4], then LE u32 w, h, frames. */
+    if (size < 16)
+        return -1;
+    uint32_t hw = data[4] | (data[5] << 8) | (data[6] << 16) | ((uint32_t)data[7] << 24);
+    uint32_t hh0 = data[8] | (data[9] << 8) | (data[10] << 16) | ((uint32_t)data[11] << 24);
+    uint32_t hf = data[12] | (data[13] << 8) | (data[14] << 16) | ((uint32_t)data[15] << 24);
+    if (hw == 0 || hw > 4096 || hh0 == 0 || hh0 > 4096 || hf == 0 || hf > 100000)
+        return -1;
+
     smk h = smk_open_memory(data, size);
     if (!h)
         return -1;
@@ -230,6 +246,13 @@ int smk_movie_open(movie_t *m, const uint8_t *data, size_t size) {
     double usf = 0;
     smk_info_all(h, NULL, &frame_count, &usf);
     smk_info_video(h, &w, &hh, NULL);
+    /* reject absurd dimensions / frame counts before they drive huge allocations
+     * (a forged Smacker header would otherwise OOM during audio extraction) */
+    if (frame_count > 100000u || w == 0 || w > 8192 || hh == 0 || hh > 8192) {
+        smk_close(h);
+        free(c);
+        return -1;
+    }
     c->frame_count = frame_count;
 
     m->kind = MOVIE_SMK;

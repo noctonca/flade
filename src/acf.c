@@ -564,11 +564,33 @@ static void block_bank_1_decode_3(void) {
 
 /* Decode one frame chunk payload (u32 colour_offset, then the opcode stream)
  * into current_buffer, referencing previous_buffer for motion. */
-static void decompress_frame(const u8 *fd) {
+/* The tile decoders walk the frame's input streams (opcodes, aligned and
+ * unaligned) forward without an end check. Decode from a copy padded with
+ * ACF_IN_SLACK trailing zero bytes so a malformed frame over-reads into the
+ * slack (garbage tiles), never past the allocation. */
+#define ACF_IN_SLACK (512 * 1024)
+static u8 *frame_scratch;
+static size_t frame_scratch_cap;
+
+static void decompress_frame(const u8 *fd, size_t size) {
+    size_t need = size + ACF_IN_SLACK;
+    if (need > frame_scratch_cap) {
+        free(frame_scratch);
+        frame_scratch = malloc(need);
+        frame_scratch_cap = frame_scratch ? need : 0;
+    }
+    if (!frame_scratch)
+        return;
+    memcpy(frame_scratch, fd, size);
+    memset(frame_scratch + size, 0, ACF_IN_SLACK);
+    fd = frame_scratch;
+
     previous_tile = previous_frame_buffer = previous_buffer;
     current_tile = current_buffer;
 
     u32 colour_offset = RD_U32(fd);
+    if (colour_offset > size) /* keep the unaligned stream inside the copy */
+        colour_offset = (u32)size;
     unaligned_stream = fd + colour_offset;
     const u8 *opcodes = fd + 4;
     aligned_stream = opcodes + (frame_height / 8) * 30;
@@ -770,7 +792,7 @@ int acf_open(acf_t *a, const uint8_t *data, size_t size) {
                     acap = ncap;
                 }
             }
-            if (acap >= alen + csize) {
+            if (csize > 0 && araw && acap >= alen + csize) {
                 memcpy(araw + alen, c + 12, csize);
                 alen += csize;
             }
@@ -820,7 +842,7 @@ int acf_step(acf_t *a) {
         } else if (chunk_is(c, "Palette ")) {
             memcpy(a->palette, pay, csize < sizeof(a->palette) ? csize : sizeof(a->palette));
         } else if (chunk_is(c, "KeyFrame") || chunk_is(c, "DltFrame")) {
-            decompress_frame(pay);
+            decompress_frame(pay, csize);
             a->frame = current_buffer;
             a->cur_frame++;
             a->pos = next;
@@ -844,6 +866,9 @@ void acf_close(acf_t *a) {
     free(buf_base[1]);
     buf_base[0] = buf_base[1] = NULL;
     current_buffer = previous_buffer = NULL;
+    free(frame_scratch);
+    frame_scratch = NULL;
+    frame_scratch_cap = 0;
 }
 
 /* ----- movie-interface adapter -------------------------------------------- */

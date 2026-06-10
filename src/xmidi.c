@@ -53,14 +53,15 @@ static uint16_t read2low(uint8_t **data);
 static uint32_t read4high(uint8_t **data);
 static void     write4high(uint8_t **data, uint32_t val);
 static void     write2high(uint8_t **data, uint16_t val);
-static uint32_t readVLQ2(uint8_t **data);
-static uint32_t readVLQ(uint8_t **data);
+static uint32_t readVLQ2(uint8_t **data, const uint8_t *end);
+static uint32_t readVLQ(uint8_t **data, const uint8_t *end);
 static int32_t  putVLQ(uint8_t *dest, uint32_t value);
 
 static struct EventInfo *pop_cached_event(uint32_t current_time, uint32_t delta);
 static void save_event(struct EventInfo *info, uint32_t current_time);
 
-static int32_t read_event_info(uint8_t *data, struct EventInfo *info, uint32_t current_time);
+static int32_t read_event_info(uint8_t *data, uint8_t *data_end, struct EventInfo *info,
+                               uint32_t current_time);
 static int32_t put_event(uint8_t *dest, struct EventInfo *info);
 static int32_t convert_to_mtrk(uint8_t *data, uint32_t size, uint8_t *dest);
 static int32_t read_XMIDI_header(uint8_t *data, uint32_t size, struct XMIDI_info *info);
@@ -105,23 +106,23 @@ static void write2high(uint8_t **data, uint16_t val)
 }
 
 /* XMIDI variable-length quantity (intervals are plain sums, not 7-bit encoded) */
-static uint32_t readVLQ2(uint8_t **data)
+static uint32_t readVLQ2(uint8_t **data, const uint8_t *end)
 {
     uint8_t *pos = *data;
     uint32_t value = 0;
-    while (!(pos[0] & 0x80))
+    while (pos < end && !(pos[0] & 0x80))
         value += *pos++;
     *data = pos;
     return value;
 }
 
 /* Standard SMF variable-length quantity */
-static uint32_t readVLQ(uint8_t **data)
+static uint32_t readVLQ(uint8_t **data, const uint8_t *end)
 {
     uint8_t *d = *data;
     uint32_t value = 0;
     int i;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 4 && d < end; i++) {
         uint8_t b = *d++;
         value = (value << 7) | (b & 0x7f);
         if (!(b & 0x80)) break;
@@ -203,20 +204,26 @@ static struct EventInfo *pop_cached_event(uint32_t current_time, uint32_t delta)
  * Event parsing / writing (adapted from ScummVM / Exult)
  * ---------------------------------------------------------------------- */
 
-static int32_t read_event_info(uint8_t *data, struct EventInfo *info, uint32_t current_time)
+static int32_t read_event_info(uint8_t *data, uint8_t *data_end, struct EventInfo *info,
+                               uint32_t current_time)
 {
     struct EventInfo *inj;
 
+    /* flade: every byte read is bounds-checked against data_end, and the
+     * sysex/meta length is clamped to the data present - the upstream parser
+     * trusted the event lengths and would read past a malformed track. */
+#define RB(var) do { if (data >= data_end) return 0; (var) = *data++; } while (0)
+
     info->start = data;
-    info->delta = readVLQ2(&data);
-    info->event = *data++;
+    info->delta = readVLQ2(&data, data_end);
+    RB(info->event);
     current_time += info->delta;
 
     switch (info->event >> 4) {
     case 0x9: /* Note On */
-        info->basic.param1 = *data++;
-        info->basic.param2 = *data++;
-        info->length = readVLQ(&data);
+        RB(info->basic.param1);
+        RB(info->basic.param2);
+        info->length = readVLQ(&data, data_end);
         if (info->basic.param2 == 0) {
             /* velocity 0 → treat as note-off */
             info->event = (info->event & 0x0f) | 0x80;
@@ -234,31 +241,31 @@ static int32_t read_event_info(uint8_t *data, struct EventInfo *info, uint32_t c
 
     case 0xc:
     case 0xd:
-        info->basic.param1 = *data++;
+        RB(info->basic.param1);
         info->basic.param2 = 0;
         break;
 
     case 0x8:
     case 0xa:
     case 0xe:
-        info->basic.param1 = *data++;
-        info->basic.param2 = *data++;
+        RB(info->basic.param1);
+        RB(info->basic.param2);
         break;
 
     case 0xb:
-        info->basic.param1 = *data++;
-        info->basic.param2 = *data++;
+        RB(info->basic.param1);
+        RB(info->basic.param2);
         /* XMIDI controller events 0x6e-0x78 are Miles-specific; pass through */
         break;
 
     case 0xf:
         switch (info->event & 0x0f) {
         case 0x2:
-            info->basic.param1 = *data++;
-            info->basic.param2 = *data++;
+            RB(info->basic.param1);
+            RB(info->basic.param2);
             break;
         case 0x3:
-            info->basic.param1 = *data++;
+            RB(info->basic.param1);
             info->basic.param2 = 0;
             break;
         case 0x6: case 0x8: case 0xa:
@@ -266,13 +273,17 @@ static int32_t read_event_info(uint8_t *data, struct EventInfo *info, uint32_t c
             info->basic.param1 = info->basic.param2 = 0;
             break;
         case 0x0: /* SysEx */
-            info->length   = readVLQ(&data);
+            info->length   = readVLQ(&data, data_end);
+            if (info->length > (uint32_t)(data_end - data))
+                info->length = (uint32_t)(data_end - data);
             info->ext.data = data;
             data += info->length;
             break;
         case 0xf: /* META */
-            info->ext.type = *data++;
-            info->length   = readVLQ(&data);
+            RB(info->ext.type);
+            info->length   = readVLQ(&data, data_end);
+            if (info->length > (uint32_t)(data_end - data))
+                info->length = (uint32_t)(data_end - data);
             info->ext.data = data;
             data += info->length;
             if (info->ext.type == 0x51 && info->length == 3) {
@@ -292,6 +303,7 @@ static int32_t read_event_info(uint8_t *data, struct EventInfo *info, uint32_t c
     }
 
     return (int32_t)(data - info->start);
+#undef RB
 }
 
 static int32_t put_event(uint8_t *dest, struct EventInfo *info)
@@ -343,20 +355,26 @@ static int32_t put_event(uint8_t *dest, struct EventInfo *info)
 
 static int32_t read_XMIDI_header(uint8_t *data, uint32_t size, struct XMIDI_info *info)
 {
-    uint32_t i = 0, len, chunkLen;
+    uint32_t i = 0, len, chunkLen, adv;
     uint8_t *start, *pos = data;
+    uint8_t *end = data + size;
     char buf[32];
     int tracksRead = 0;
 
-    (void)size;
+    /* flade: bounds-check every read against `end`. The upstream parser trusted
+     * the IFF chunk lengths and would read past a short / malformed buffer. The
+     * invariant maintained throughout is pos <= end. */
+#define HAVE(n) ((size_t)(end - pos) >= (size_t)(n))
 
-    if (memcmp(pos, "FORM", 4) != 0)
+    if (!HAVE(4) || memcmp(pos, "FORM", 4) != 0)
         return 0;
     pos += 4;
 
+    if (!HAVE(4)) return 0;
     len   = read4high(&pos);
     start = pos;
 
+    if (!HAVE(4)) return 0;
     if (memcmp(pos, "XMID", 4) == 0) {
         /* XDIRless XMIDI */
         pos += 4;
@@ -368,54 +386,68 @@ static int32_t read_XMIDI_header(uint8_t *data, uint32_t size, struct XMIDI_info
         info->num_tracks = 0;
 
         for (i = 4; i < len; i++) {
+            if (!HAVE(8)) return 0;
             memcpy(buf, pos, 4);
             pos += 4;
             chunkLen = read4high(&pos);
             i += 8;
 
             if (memcmp(buf, "INFO", 4) == 0) {
-                if (chunkLen < 2) return 0;
+                if (chunkLen < 2 || !HAVE(2)) return 0;
                 info->num_tracks = (uint8_t)read2low(&pos);
-                pos += 2;
                 break;
             }
-            pos += (chunkLen + 1) & ~1u;
-            i   += (chunkLen + 1) & ~1u;
+            adv = (chunkLen + 1) & ~1u;
+            if (!HAVE(adv)) return 0;
+            pos += adv;
+            i   += adv;
         }
 
         if (info->num_tracks == 0) return 0;
 
-        pos = start + ((len + 1) & ~1u);
+        adv = (len + 1) & ~1u;
+        if (adv > (size_t)(end - start)) return 0;
+        pos = start + adv;
 
-        if (memcmp(pos, "CAT ", 4) != 0) return 0;
+        if (!HAVE(4) || memcmp(pos, "CAT ", 4) != 0) return 0;
         pos += 4;
+        if (!HAVE(4)) return 0;
         len  = read4high(&pos);
-        if (memcmp(pos, "XMID", 4) != 0) return 0;
+        if (!HAVE(4) || memcmp(pos, "XMID", 4) != 0) return 0;
         pos += 4;
     }
 
     if (info->num_tracks > ARRAYSIZE(info->tracks)) return 0;
 
     while (tracksRead < info->num_tracks) {
+        if (!HAVE(4)) return 0;
         if (!memcmp(pos, "FORM", 4)) {
+            if (!HAVE(8)) return 0;
             pos += 8;
         } else if (!memcmp(pos, "XMID", 4)) {
             pos += 4;
         } else if (!memcmp(pos, "TIMB", 4)) {
             pos += 4;
+            if (!HAVE(4)) return 0;
             len = read4high(&pos);
-            pos += (len + 1) & ~1u;
+            adv = (len + 1) & ~1u;
+            if (!HAVE(adv)) return 0;
+            pos += adv;
         } else if (!memcmp(pos, "EVNT", 4)) {
+            if (!HAVE(8)) return 0;
             info->tracks[tracksRead] = pos + 8;
             pos += 4;
             len = read4high(&pos);
-            pos += (len + 1) & ~1u;
+            adv = (len + 1) & ~1u;
+            if (!HAVE(adv)) return 0;
+            pos += adv;
             tracksRead++;
         } else {
             return 0;
         }
     }
     return 1;
+#undef HAVE
 }
 
 /* -------------------------------------------------------------------------
@@ -445,9 +477,9 @@ static int32_t convert_to_mtrk(uint8_t *data, uint32_t size, uint8_t *dest)
 
     while (data < data_end) {
         /* Skip the end-of-stream marker here; we'll write our own later */
-        if (data[0] == 0xff && data[1] == 0x2f) break;
+        if (data + 1 < data_end && data[0] == 0xff && data[1] == 0x2f) break;
 
-        rc = read_event_info(data, &info, (uint32_t)time);
+        rc = read_event_info(data, data_end, &info, (uint32_t)time);
         if (!rc) return 0;
         data += rc;
 
