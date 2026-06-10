@@ -131,6 +131,67 @@ static void find_walk_cb(void *ud, const char *path, uint32_t size) {
         snprintf(f->found, sizeof(f->found), "%s", path);
 }
 
+/* Find a file by exact basename anywhere in the image (case-insensitive). */
+typedef struct {
+    const char *want;
+    char found[1024];
+} base_ctx;
+
+static void base_walk_cb(void *ud, const char *path, uint32_t size) {
+    (void)size;
+    base_ctx *b = (base_ctx *)ud;
+    if (b->found[0])
+        return;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    if (ieq(base, b->want))
+        snprintf(b->found, sizeof(b->found), "%s", path);
+}
+
+/* path (sans leading '/') of the first file with this basename, or "" */
+static void iso_find_basename(iso9660_t *iso, const char *basename, char *out, size_t cap) {
+    base_ctx b;
+    b.want = basename;
+    b.found[0] = 0;
+    iso_walk(iso, base_walk_cb, &b);
+    snprintf(out, cap, "%s", b.found[0] == '/' ? b.found + 1 : b.found);
+}
+
+/* Read the LBA2 cutscene catalogue (RESS.HQR entry 48 = the ACF name list):
+ * names in VIDEO.HQR entry order. Returns the count. */
+#define MAX_VIDEO_NAMES 128
+#define RESS_ACFLIST 48
+static int lba2_video_names(iso9660_t *iso, char names[][32]) {
+    char ress[1024];
+    iso_find_basename(iso, "RESS.HQR", ress, sizeof(ress));
+    if (!ress[0])
+        return 0;
+    uint8_t *rh = NULL;
+    size_t rsz = 0;
+    if (iso_read(iso, ress, &rh, &rsz) != 0)
+        return 0;
+    int count = 0;
+    uint8_t *lst = NULL;
+    size_t lsz = 0;
+    if (hqr_entry(rh, rsz, RESS_ACFLIST, &lst, &lsz) == 0) {
+        size_t i = 0;
+        while (i < lsz && count < MAX_VIDEO_NAMES) {
+            while (i < lsz && lst[i] <= 32)
+                i++; /* skip whitespace */
+            if (i >= lsz || lst[i] == 26)
+                break; /* 0x1A terminates */
+            int k = 0;
+            while (i < lsz && lst[i] > 32 && k < 31)
+                names[count][k++] = (char)lst[i++];
+            names[count][k] = 0;
+            count++;
+        }
+        free(lst);
+    }
+    free(rh);
+    return count;
+}
+
 static void usage(void) {
     printf("flade - Adeline movie player (FLA + ACF)\n\n"
            "Usage:\n"
@@ -220,7 +281,17 @@ int main(int argc, char **argv) {
         }
         if (do_list) {
             printf("Movies in %s:\n", cd_path);
-            iso_walk(iso, list_walk_cb, NULL);
+            iso_walk(iso, list_walk_cb, NULL); /* loose .fla / .acf */
+            /* LBA2 Smacker cinematics (VIDEO.HQR + the RESS.HQR name list) */
+            char names[MAX_VIDEO_NAMES][32];
+            int nv = lba2_video_names(iso, names);
+            char vpath[1024];
+            iso_find_basename(iso, "VIDEO.HQR", vpath, sizeof(vpath));
+            if (nv > 0 && vpath[0]) {
+                printf("  Smacker cinematics in /%s (play by name, or --index):\n", vpath);
+                for (int i = 0; i < nv; i++)
+                    printf("    [%2d]  %s\n", i, names[i]);
+            }
             iso_close(iso);
             return 0;
         }
@@ -247,12 +318,35 @@ int main(int argc, char **argv) {
             fc.want = movie;
             fc.found[0] = 0;
             iso_walk(iso, find_walk_cb, &fc);
-            if (!fc.found[0]) {
-                fprintf(stderr, "flade: no movie matching '%s' in image (try --list)\n", movie);
-                iso_close(iso);
-                return 1;
+            if (fc.found[0]) {
+                snprintf(inpath, sizeof(inpath), "%s", fc.found + 1); /* loose .fla/.acf */
+            } else {
+                /* Try the LBA2 cinematic catalogue: name -> VIDEO.HQR entry. */
+                char names[MAX_VIDEO_NAMES][32];
+                int nv = lba2_video_names(iso, names);
+                int vidx = -1;
+                for (int i = 0; i < nv; i++) {
+                    char stem[32];
+                    snprintf(stem, sizeof(stem), "%s", names[i]);
+                    char *dot = strrchr(stem, '.');
+                    if (dot)
+                        *dot = 0;
+                    if (ieq(names[i], movie) || ieq(stem, movie)) {
+                        vidx = i;
+                        break;
+                    }
+                }
+                char vpath[1024];
+                iso_find_basename(iso, "VIDEO.HQR", vpath, sizeof(vpath));
+                if (vidx >= 0 && vpath[0]) {
+                    snprintf(inpath, sizeof(inpath), "%s", vpath);
+                    video_index = vidx; /* the HQR-container path plays this entry */
+                } else {
+                    fprintf(stderr, "flade: no movie matching '%s' in image (try --list)\n", movie);
+                    iso_close(iso);
+                    return 1;
+                }
             }
-            snprintf(inpath, sizeof(inpath), "%s", fc.found + 1); /* strip leading '/' */
         }
         if (iso_read(iso, inpath, &movie_buf, &movie_size) != 0) {
             fprintf(stderr, "flade: '/%s' not found in image\n", inpath);

@@ -50,11 +50,14 @@ From a loose movie file:
 ./build/flade cutscene.smk
 ```
 
-LBA2's Smacker cinematics live in `VIDEO.HQR` (one `.smk` per entry). Point
-flade at the HQR and pick an entry with `--index`:
+LBA2's Smacker cinematics live in `VIDEO.HQR` (one `.smk` per entry). `--list`
+names them (from the `RESS.HQR` catalogue the game uses); play one by name, or
+point flade at the HQR and pick an entry with `--index`:
 
 ```bash
-./build/flade --cd /path/to/LBA2.GOG /LBA2/VIDEO/VIDEO.HQR --index 0
+./build/flade --cd /path/to/LBA2.GOG --list      # INTRO, CRASH, END, ...
+./build/flade --cd /path/to/LBA2.GOG INTRO
+./build/flade --cd /path/to/LBA2.GOG /LBA2/VIDEO/VIDEO.HQR --index 16
 ```
 
 A couple of FLA cutscenes (FLUTE2, GLASS2) are scored with a MIDI flute. To

@@ -53,6 +53,9 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
         }
     if (first < 0)
         return;
+    /* decode audio only here - skip the (costly) video pass; the player
+     * decodes video later. Caller re-enables video after this returns. */
+    smk_enable_video(h, 0);
     int out_ch = ch[first] ? ch[first] : 1;
     int out_rate = rate[first] ? (int)rate[first] : 22050;
 
@@ -175,8 +178,8 @@ int smk_movie_open(movie_t *m, const uint8_t *data, size_t size) {
     m->close = smk_movie_close;
     m->impl = c;
 
-    smk_enable_video(h, 1);
-    extract_audio(c, m); /* decodes all frames once; step() restarts at 0 */
-    c->cur = 0;
+    extract_audio(c, m);    /* audio-only decode pass (video disabled inside) */
+    smk_enable_video(h, 1); /* (re)enable for the player's forward video pass */
+    c->cur = 0;             /* step() will smk_first to restart at frame 0 */
     return 0;
 }
