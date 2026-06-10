@@ -12,7 +12,7 @@
 /* FLA frame opcodes, after the engine's "opcode - 1" normalisation. */
 enum {
     OP_PALETTE = 0,
-    OP_FADE = 1,
+    OP_INFO = 1, /* FLA_INFO: Info 1=play MIDI, 2=fade-to-black, 3=flag, 4=fade MIDI */
     OP_PLAY_SAMPLE = 2,
     OP_STOP_SAMPLE = 4,
     OP_DELTA_FRAME = 5,
@@ -162,8 +162,11 @@ int fla_step(fla_t *fla) {
             fla->palette_dirty = 1;
             break;
         }
-        case OP_FADE:
-            fla->fade_out = 1;
+        case OP_INFO:
+            /* Only Info==2 is a fade-to-black; 1/3/4 drive MIDI or a flag and
+             * must not fade (treating them all as fades dips the picture). */
+            if (bs >= 2 && rd16(pay) == 2)
+                fla->fade_out = 1;
             break;
         case OP_PLAY_SAMPLE:
             if (fla->n_plays < FLA_MAX_EVENTS && bs >= 9) {

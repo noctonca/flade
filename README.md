@@ -84,7 +84,8 @@ opcode:  type:u8  pad:u8  size:u16  payload[size]
 ```
 
 Opcode types (after the engine's `type-1` normalisation): `0` load palette,
-`1` fade, `2` play sample, `4` stop sample, `5` delta frame, `7` key frame.
+`1` info (sub-value: 2 = fade-to-black, 1/4 = MIDI cues, 3 = flag), `2` play
+sample, `4` stop sample, `5` delta frame, `7` key frame.
 Frames are paced at `1000/(speed+1)` ms. Palettes are 6-bit VGA values stored
 pre-shifted into 8-bit, used directly (and bit-replicated up to full white).
 
