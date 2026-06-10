@@ -1,7 +1,7 @@
 # flade
 
 A small standalone player for **Adeline movies**, rendered with **SDL3**. It
-plays two of Adeline's cutscene formats:
+plays three of Adeline's cutscene formats:
 
 - **FLA**: *Little Big Adventure 1* (1994), with its `FLASAMP.HQR` sound effects
   (and the cutscene MIDI flute in FLUTE2/GLASS2, given a soundfont);
@@ -115,13 +115,14 @@ to the current one if omitted.
 | `movie.c` | format detection + the generic decoder interface (`movie.h`) |
 | `fla.c` | FLA decoder (LBA1): palette / key-frame RLE / delta patches |
 | `acf.c` | ACF/XCF decoder (Time Commando): 64-opcode 8x8 tile codec |
-| `smk.c` | Smacker decoder (LBA2) via vendored libsmacker; mixes audio tracks |
+| `smk.c` | Smacker decoder (LBA2) via vendored libsmacker; music + per-language voice tracks |
+| `player.c` | lazy frame cache over a movie (instant rewind / scrub / reverse) |
 | `iso9660.c` | read / list / walk a raw (2352) or cooked (2048) CD image |
 | `hqr.c` | HQR archive table + LZSS/LZMIT (`ExpandLZ`) expansion |
 | `voc.c` | Creative Voice File → signed-16 mono PCM (FLA samples) |
 | `midi.c` | render FLA cutscene MIDI (XMI → SMF → TinySoundFont) |
-| `audio.c` | SDL3 software mixer (FLA cues) + streaming channel (ACF/MIDI) |
-| `main.c` | input source, window/texture, generic play loop |
+| `audio.c` | SDL3 mixer: FLA cues + a streaming channel (ACF/SMK/MIDI) + a swappable SMK voice channel |
+| `main.c` | input source, window/texture, generic play loop, `--extract` |
 
 ### FLA format, briefly
 
@@ -170,10 +171,16 @@ core is SDL-free, which makes it directly sanitisable and fuzzable headless.
   all under ASan+UBSan.
 
 The negative tests and a fuzz smoke run in CI (`.github/workflows/ci.yml`); the
-full sanitised corpus sweep is local, since it needs the game data. Fuzzing the
-decoders turned up and fixed several memory bugs (ACF/FLA frame-buffer overflows
-on malformed motion data, a double-free in vendored libsmacker); the decoders
-are clean on the whole corpus and survive the fuzzers.
+full sanitised corpus sweep is local, since it needs the game data. Fuzzing
+turned up and fixed a range of memory-safety and DoS bugs: frame-buffer
+overflows in the ACF and FLA decoders on malformed motion/opcode data, an
+unbounded read and a bad back-reference in the HQR/LZSS expander, multi-GB
+allocations from forged headers, a double-free in vendored libsmacker, and
+out-of-bounds reads in the XMI parser. The user-facing parsers (movie, HQR, VOC)
+are the gating set: they are fuzz-clean, and the whole 110-movie corpus decodes
+ASan+UBSan-clean with unchanged digests. The XMI→MIDI path's input parsers are
+hardened too, but its vendored 2-pass XMI→SMF converter is run best-effort
+(non-gating), since it only ever sees the game's own `MIDI_MI.HQR`.
 
 ## Provenance & licence
 

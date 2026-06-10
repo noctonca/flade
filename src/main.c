@@ -361,7 +361,7 @@ static int run_extract(const char *src, const char *cd_path, const char *outdir)
 }
 
 static void usage(void) {
-    printf("flade - Adeline movie player (FLA + ACF)\n\n"
+    printf("flade - Adeline movie player (FLA + ACF + SMK)\n\n"
            "Usage:\n"
            "  flade <movie.fla|.acf> [options]\n"
            "  flade --cd <image> <name | /path/in/image> [options]\n"
@@ -377,7 +377,8 @@ static void usage(void) {
            "  --soundfont <f>  .sf2 for MIDI (default: a system soundfont)\n"
            "  --index <n>      play entry n when the input is an HQR (LBA2 VIDEO.HQR)\n"
            "  --voice <n>      Smacker voice track to mix (1..3 = FR/DE/EN; default first)\n"
-           "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
+           "  --list           with --cd, list the movies (.fla/.acf, and the\n"
+           "                   VIDEO.HQR Smacker cinematics) in the image\n"
            "  --extract <src>  unpack a CD image or HQR to [outdir]; smart-named by\n"
            "                   content + the RESS catalogue (e.g. INTRO.SMK)\n"
            "  --scale <n>      initial window scale (default 3)\n"
