@@ -61,8 +61,9 @@ point flade at the HQR and pick an entry with `--index`:
 ```
 
 A Smacker carries music on track 0 and one voice per language on tracks 1..3
-(FR/DE/EN). flade mixes the music with a single voice (the first by default);
-`--voice 3` selects another.
+(FR/DE/EN). flade plays the music plus a single voice (the first by default,
+or `--voice 3`) on its own audio channel, so you can switch language **live**
+during playback with keys `1`/`2`/`3` - the music keeps playing.
 
 A couple of FLA cutscenes (FLUTE2, GLASS2) are scored with a MIDI flute. To
 hear it you need `MIDI_MI.HQR` (read automatically from `--cd`, or pass
@@ -84,6 +85,7 @@ frame-accurate; audio plays during normal forward and is muted for reverse / FF
 | `,` / `.` | step one frame back / forward |
 | `R` | reverse direction (play backwards) |
 | `-` / `=` | slower / faster (0.125x .. 8x) |
+| `1` / `2` / `3` | switch voice language, live (Smacker) |
 | `Home` | restart |
 | `F` | fullscreen, `Esc`/`Q` quit |
 

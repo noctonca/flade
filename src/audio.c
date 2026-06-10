@@ -208,3 +208,46 @@ void audio_stream_stop(void) {
         g_music = NULL;
     }
 }
+
+/* ----- voice channel (SMK live language switch) --------------------------- */
+static SDL_AudioStream *g_voice;
+
+int audio_voice_start(const int16_t *pcm, size_t frames, int rate, int channels,
+                      size_t start_frame, float volume) {
+    audio_voice_stop();
+    if (!pcm || frames == 0 || channels <= 0)
+        return -1;
+    SDL_AudioSpec spec;
+    SDL_zero(spec);
+    spec.format = SDL_AUDIO_S16;
+    spec.channels = channels;
+    spec.freq = rate;
+    g_voice = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!g_voice)
+        return -1;
+    SDL_SetAudioStreamGain(g_voice, volume);
+    if (start_frame > frames)
+        start_frame = frames;
+    size_t off = start_frame * (size_t)channels;
+    size_t n = (frames - start_frame) * (size_t)channels;
+    if (n)
+        SDL_PutAudioStreamData(g_voice, pcm + off, (int)(n * sizeof(int16_t)));
+    SDL_ResumeAudioStreamDevice(g_voice);
+    return 0;
+}
+
+void audio_voice_set_paused(int paused) {
+    if (!g_voice)
+        return;
+    if (paused)
+        SDL_PauseAudioStreamDevice(g_voice);
+    else
+        SDL_ResumeAudioStreamDevice(g_voice);
+}
+
+void audio_voice_stop(void) {
+    if (g_voice) {
+        SDL_DestroyAudioStream(g_voice);
+        g_voice = NULL;
+    }
+}

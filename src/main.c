@@ -411,6 +411,16 @@ int main(int argc, char **argv) {
     /* Transitional: FLA sound effects still come from the cue arrays. */
     fla_t *cues = fla_from_movie(&mv);
 
+    /* SMK voice tracks (live language switch on keys 1-N) */
+    smk_voices voices;
+    int have_voices = 0, active_voice = 0;
+    if (!no_audio && smk_get_voices(&mv, &voices) > 0) {
+        have_voices = 1;
+        active_voice = voices.default_index >= 0 ? voices.default_index : 0;
+        printf("flade: %d voice track%s (keys 1-%d switch language)\n", voices.count,
+               voices.count == 1 ? "" : "s", voices.count);
+    }
+
     /* ----- SDL setup ------------------------------------------------------ */
     Uint32 init_flags = SDL_INIT_VIDEO | (no_audio ? 0 : SDL_INIT_AUDIO);
     if (!SDL_Init(init_flags)) {
@@ -607,10 +617,18 @@ int main(int argc, char **argv) {
                     if (audio_stream_start(mv.audio_pcm, mv.audio_frames, mv.audio_rate,
                                            mv.audio_channels, sf, volume) != 0)
                         have_stream = 0; /* no device - drop to silent */
+                    /* the active voice rides its own channel, started together */
+                    if (have_voices)
+                        audio_voice_start(voices.pcm[active_voice], voices.frames, voices.rate,
+                                          voices.channels, sf, volume);
                 }
                 audio_stream_set_paused(paused);
+                if (have_voices)
+                    audio_voice_set_paused(paused);
             } else if (was_audio_active) {
                 audio_stream_stop();
+                if (have_voices)
+                    audio_voice_stop();
             }
             was_audio_active = audio_active;
         }
@@ -694,6 +712,22 @@ int main(int argc, char **argv) {
                     if (paused)
                         audio_stop_all();
                     break;
+                case SDLK_1:
+                case SDLK_2:
+                case SDLK_3:
+                case SDLK_4: { /* switch SMK voice (language) live */
+                    int vi = (int)(e.key.key - SDLK_1);
+                    if (have_voices && vi < voices.count && vi != active_voice) {
+                        active_voice = vi;
+                        if (was_audio_active) { /* swap the voice channel only; music plays on */
+                            size_t sf = (size_t)((double)(int)pos / mv.fps * voices.rate);
+                            audio_voice_start(voices.pcm[vi], voices.frames, voices.rate,
+                                              voices.channels, sf, volume);
+                            audio_voice_set_paused(paused);
+                        }
+                    }
+                    break;
+                }
                 case SDLK_R: /* reverse direction */
                     dir = -dir;
                     audio_stop_all();
@@ -757,6 +791,7 @@ int main(int argc, char **argv) {
 
     /* ----- teardown ------------------------------------------------------- */
     audio_stream_stop();
+    audio_voice_stop();
     midi_shutdown();
     free(midi_pcm);
     if (have_audio) {

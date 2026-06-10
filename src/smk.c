@@ -1,25 +1,35 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 the flade authors
  *
- * Smacker playback via libsmacker (LGPL 2.1, vendored in libsmacker/). The
- * video is forward-decoded per frame; the audio tracks (music + voice) are
- * decoded up front, mixed, and exposed as one streaming track matched to the
- * video duration - the same model the ACF path uses. */
+ * Smacker playback via libsmacker (LGPL 2.1, vendored in libsmacker/). Video is
+ * forward-decoded per frame. Audio tracks (0 = music, 1.. = one voice per
+ * language) are decoded up front and each normalised to a common format
+ * (matched to the video duration); the music becomes the movie's streaming
+ * track and the voices are exposed separately so the player can switch
+ * language live on its own audio channel. */
 #include "smk.h"
 #include "libsmacker/smacker.h"
 
 #include <stdlib.h>
 #include <string.h>
 
+#define SMK_MAX_VOICE 6
+
 typedef struct {
     smk h;
     unsigned long frame_count;
     unsigned long cur;
-    int16_t *audio; /* owned; also referenced by movie.audio_pcm */
+
+    int16_t *music;                    /* track 0, normalised; = movie.audio_pcm */
+    int16_t *voice[SMK_MAX_VOICE];     /* one per language voice track */
+    int voice_track[SMK_MAX_VOICE];    /* original smk track number of each */
+    int nvoice;
+    int default_voice;                 /* index into voice[], or -1 */
+    size_t aframes;
+    int arate, achannels;
 } smk_ctx;
 
-/* Preferred voice track (1..6), or -1 for "the first voice present". A .smk
- * carries music on track 0 and one voice per language on tracks 1+. */
+/* Preferred voice track (1..6), or -1 for "the first present". */
 static int g_pref_voice = -1;
 void smk_set_voice(int track) {
     g_pref_voice = track;
@@ -41,8 +51,31 @@ static int append_bytes(uint8_t **buf, size_t *len, size_t *cap, const uint8_t *
     return 0;
 }
 
-/* Decode every frame once, concatenating each audio track, then mix the tracks
- * (music + voice) sample-wise into one interleaved s16 buffer. */
+/* Resample/channel-convert one raw track to out_frames of interleaved s16 at
+ * out_ch channels (mono is duplicated to every channel; rate via nearest). */
+static int16_t *normalize_track(const uint8_t *tb, size_t tlen, int tch, int tbd, int trate,
+                                int out_rate, int out_ch, size_t out_frames) {
+    int16_t *out = malloc(out_frames * (size_t)out_ch * sizeof(int16_t));
+    if (!out)
+        return NULL;
+    int b16 = tbd >= 16, bps = b16 ? 2 : 1;
+    size_t tframes = tlen / (size_t)(bps * tch);
+    double step = (trate ? (double)trate : out_rate) / out_rate;
+    for (size_t of = 0; of < out_frames; of++) {
+        size_t sf = (size_t)(of * step);
+        for (int c = 0; c < out_ch; c++) {
+            int s = 0;
+            if (sf < tframes) {
+                int sc = c < tch ? c : tch - 1;
+                size_t idx = sf * (size_t)tch + (size_t)sc;
+                s = b16 ? (int16_t)(tb[idx * 2] | (tb[idx * 2 + 1] << 8)) : (((int)tb[idx] - 128) << 8);
+            }
+            out[of * (size_t)out_ch + (size_t)c] = (int16_t)s;
+        }
+    }
+    return out;
+}
+
 static void extract_audio(smk_ctx *c, movie_t *m) {
     smk h = c->h;
     unsigned char mask = 0, ch[7] = {0}, bd[7] = {0};
@@ -51,35 +84,10 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
     if (!mask)
         return;
 
-    /* Play music (track 0) plus a single voice (the preferred one if present,
-     * else the first), like the game - not every language at once. */
-    unsigned char umask = (unsigned char)(mask & 0x01);
-    int voice = -1;
-    if (g_pref_voice >= 1 && g_pref_voice < 7 && (mask & (1 << g_pref_voice)))
-        voice = g_pref_voice;
-    else
-        for (int t = 1; t < 7; t++)
-            if (mask & (1 << t)) {
-                voice = t;
-                break;
-            }
-    if (voice >= 0)
-        umask |= (unsigned char)(1 << voice);
-    if (!umask)
-        umask = mask;
-
-    int first = -1;
     for (int t = 0; t < 7; t++)
-        if (umask & (1 << t)) {
+        if (mask & (1 << t))
             smk_enable_audio(h, (unsigned char)t, 1);
-            if (first < 0)
-                first = t;
-        }
-    if (first < 0)
-        return;
-    /* decode audio only here - skip the (costly) video pass; the player
-     * decodes video later. Caller re-enables video after this returns. */
-    smk_enable_video(h, 0);
+    smk_enable_video(h, 0); /* audio-only decode pass (fast); caller re-enables */
 
     uint8_t *tbuf[7] = {0};
     size_t tlen[7] = {0}, tcap[7] = {0};
@@ -87,7 +95,7 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
         return;
     for (unsigned long f = 0; f < c->frame_count; f++) {
         for (int t = 0; t < 7; t++)
-            if (umask & (1 << t)) {
+            if (mask & (1 << t)) {
                 const unsigned char *a = smk_get_audio(h, (unsigned char)t);
                 unsigned long asz = smk_get_audio_size(h, (unsigned char)t);
                 if (a && asz)
@@ -97,12 +105,6 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
             smk_next(h);
     }
 
-    /* Tracks can differ in channel count (music stereo, voice mono) and, in
-     * principle, sample rate. Normalise each to a common output format (the
-     * max channels and max rate) before summing: mono is duplicated to every
-     * output channel, and a differing rate is nearest-neighbour resampled.
-     * Without this the mono voice's samples land at stereo positions and play
-     * at double speed. */
     int out_ch = 1, out_rate = 0;
     for (int t = 0; t < 7; t++)
         if (tlen[t]) {
@@ -130,52 +132,60 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
         return;
     }
 
-    int32_t *acc = calloc(out_frames * (size_t)out_ch, sizeof(int32_t));
-    if (!acc) {
-        for (int t = 0; t < 7; t++)
-            free(tbuf[t]);
-        return;
-    }
-    for (int t = 0; t < 7; t++) {
-        if (!tlen[t])
-            continue;
-        int tch = ch[t] ? ch[t] : 1, b16 = bd[t] >= 16;
-        int bps = b16 ? 2 : 1;
-        size_t tframes = tlen[t] / (size_t)(bps * tch);
-        const uint8_t *p = tbuf[t];
-        double step = (rate[t] ? (double)rate[t] : out_rate) / out_rate; /* src frames per out frame */
-        for (size_t of = 0; of < out_frames; of++) {
-            size_t sf = (size_t)(of * step);
-            if (sf >= tframes)
-                break;
-            for (int c = 0; c < out_ch; c++) {
-                int sc = c < tch ? c : tch - 1; /* map output ch to track ch (mono -> all) */
-                size_t idx = sf * (size_t)tch + (size_t)sc;
-                int s = b16 ? (int16_t)(p[idx * 2] | (p[idx * 2 + 1] << 8))
-                            : (((int)p[idx] - 128) << 8);
-                acc[of * (size_t)out_ch + (size_t)c] += s;
+    /* track 0 = music; tracks 1.. = voices. Each normalised separately - they
+     * play as independent streams that SDL mixes, so the active voice can be
+     * swapped live without touching the music. */
+    if (tlen[0])
+        c->music = normalize_track(tbuf[0], tlen[0], ch[0] ? ch[0] : 1, bd[0], (int)rate[0],
+                                   out_rate, out_ch, out_frames);
+    for (int t = 1; t < 7; t++)
+        if (tlen[t] && c->nvoice < SMK_MAX_VOICE) {
+            int16_t *v = normalize_track(tbuf[t], tlen[t], ch[t] ? ch[t] : 1, bd[t], (int)rate[t],
+                                         out_rate, out_ch, out_frames);
+            if (v) {
+                c->voice[c->nvoice] = v;
+                c->voice_track[c->nvoice] = t;
+                c->nvoice++;
             }
         }
+    for (int t = 0; t < 7; t++)
         free(tbuf[t]);
-    }
 
-    size_t total = out_frames * (size_t)out_ch;
-    int16_t *out = malloc(total * sizeof(int16_t));
-    if (!out) {
-        free(acc);
-        return;
-    }
-    for (size_t i = 0; i < total; i++) {
-        int32_t v = acc[i];
-        out[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-    }
-    free(acc);
+    c->aframes = out_frames;
+    c->arate = out_rate;
+    c->achannels = out_ch;
 
-    c->audio = out;
-    m->audio_pcm = out;
-    m->audio_frames = out_frames;
-    m->audio_rate = out_rate;
-    m->audio_channels = out_ch;
+    c->default_voice = -1;
+    if (g_pref_voice >= 1)
+        for (int i = 0; i < c->nvoice; i++)
+            if (c->voice_track[i] == g_pref_voice)
+                c->default_voice = i;
+    if (c->default_voice < 0 && c->nvoice > 0)
+        c->default_voice = 0;
+
+    int16_t *track = c->music ? c->music : (c->nvoice ? c->voice[0] : NULL);
+    if (track) {
+        m->audio_pcm = track;
+        m->audio_frames = out_frames;
+        m->audio_rate = out_rate;
+        m->audio_channels = out_ch;
+    }
+}
+
+int smk_get_voices(movie_t *m, smk_voices *v) {
+    if (!m || m->kind != MOVIE_SMK)
+        return 0;
+    smk_ctx *c = (smk_ctx *)m->impl;
+    v->count = c->nvoice;
+    for (int i = 0; i < c->nvoice; i++) {
+        v->pcm[i] = c->voice[i];
+        v->track[i] = c->voice_track[i];
+    }
+    v->frames = c->aframes;
+    v->rate = c->arate;
+    v->channels = c->achannels;
+    v->default_index = c->default_voice;
+    return c->nvoice;
 }
 
 static int smk_movie_step(movie_t *m, movie_frame *out) {
@@ -197,7 +207,9 @@ static void smk_movie_close(movie_t *m) {
     if (c) {
         if (c->h)
             smk_close(c->h);
-        free(c->audio);
+        free(c->music);
+        for (int i = 0; i < c->nvoice; i++)
+            free(c->voice[i]);
         free(c);
     }
     m->impl = NULL;

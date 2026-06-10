@@ -30,4 +30,12 @@ void audio_stream_set_paused(int paused);
 void audio_stream_set_gain(float gain); /* for fades */
 void audio_stream_stop(void);
 
+/* A second streaming channel for the SMK voice track, so the language can be
+ * swapped live (restart it with a different track) without touching the music
+ * stream above. SDL mixes the two on the device. */
+int audio_voice_start(const int16_t *pcm, size_t frames, int rate, int channels,
+                      size_t start_frame, float volume);
+void audio_voice_set_paused(int paused);
+void audio_voice_stop(void);
+
 #endif /* FLADE_AUDIO_H */
