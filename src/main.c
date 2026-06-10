@@ -16,6 +16,7 @@
 #include "player.h"
 #include "fla.h"
 #include "midi.h"
+#include "smk.h"
 #include "hqr.h"
 #include "voc.h"
 #include "audio.h"
@@ -207,6 +208,7 @@ static void usage(void) {
            "  --midi <file>    MIDI_MI.HQR for FLA cutscene music (default: from --cd)\n"
            "  --soundfont <f>  .sf2 for MIDI (default: a system soundfont)\n"
            "  --index <n>      play entry n when the input is an HQR (LBA2 VIDEO.HQR)\n"
+           "  --voice <n>      Smacker voice track to mix (1..3 = FR/DE/EN; default first)\n"
            "  --list           with --cd, list the movies (.fla/.acf) in the image\n"
            "  --scale <n>      initial window scale (default 3)\n"
            "  --no-audio       video only\n"
@@ -255,6 +257,8 @@ int main(int argc, char **argv) {
             soundfont_path = argv[++i];
         else if (!strcmp(a, "--index") && i + 1 < argc)
             video_index = atoi(argv[++i]);
+        else if (!strcmp(a, "--voice") && i + 1 < argc)
+            smk_set_voice(atoi(argv[++i])); /* SMK voice track (1..3 = FR/DE/EN) */
         else if (!strcmp(a, "--list"))
             do_list = 1;
         else if (!strcmp(a, "--no-audio"))

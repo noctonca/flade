@@ -60,6 +60,10 @@ point flade at the HQR and pick an entry with `--index`:
 ./build/flade --cd /path/to/LBA2.GOG /LBA2/VIDEO/VIDEO.HQR --index 16
 ```
 
+A Smacker carries music on track 0 and one voice per language on tracks 1..3
+(FR/DE/EN). flade mixes the music with a single voice (the first by default);
+`--voice 3` selects another.
+
 A couple of FLA cutscenes (FLUTE2, GLASS2) are scored with a MIDI flute. To
 hear it you need `MIDI_MI.HQR` (read automatically from `--cd`, or pass
 `--midi MIDI_MI.HQR`) and a General MIDI soundfont (a system `.sf2` is found
@@ -67,7 +71,7 @@ automatically, or pass `--soundfont my.sf2`). Steam/GOG re-releases ship MP3
 music instead of the MIDI, so the flute is only available from the CD data.
 
 Options: `--scale N` (window size), `--no-audio`, `--volume 0..1`,
-`--midi <MIDI_MI.HQR>`, `--soundfont <.sf2>`.
+`--midi <MIDI_MI.HQR>`, `--soundfont <.sf2>`, `--index <n>`, `--voice <1..3>`.
 
 Transport (every decoded frame is cached, so rewind and scrub are instant and
 frame-accurate; audio plays during normal forward and is muted for reverse / FF

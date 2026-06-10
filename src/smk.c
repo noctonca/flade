@@ -18,6 +18,13 @@ typedef struct {
     int16_t *audio; /* owned; also referenced by movie.audio_pcm */
 } smk_ctx;
 
+/* Preferred voice track (1..6), or -1 for "the first voice present". A .smk
+ * carries music on track 0 and one voice per language on tracks 1+. */
+static int g_pref_voice = -1;
+void smk_set_voice(int track) {
+    g_pref_voice = track;
+}
+
 static int append_bytes(uint8_t **buf, size_t *len, size_t *cap, const uint8_t *src, size_t n) {
     if (*len + n > *cap) {
         size_t nc = *cap ? *cap * 2 : (1u << 16);
@@ -44,9 +51,26 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
     if (!mask)
         return;
 
+    /* Play music (track 0) plus a single voice (the preferred one if present,
+     * else the first), like the game - not every language at once. */
+    unsigned char umask = (unsigned char)(mask & 0x01);
+    int voice = -1;
+    if (g_pref_voice >= 1 && g_pref_voice < 7 && (mask & (1 << g_pref_voice)))
+        voice = g_pref_voice;
+    else
+        for (int t = 1; t < 7; t++)
+            if (mask & (1 << t)) {
+                voice = t;
+                break;
+            }
+    if (voice >= 0)
+        umask |= (unsigned char)(1 << voice);
+    if (!umask)
+        umask = mask;
+
     int first = -1;
     for (int t = 0; t < 7; t++)
-        if (mask & (1 << t)) {
+        if (umask & (1 << t)) {
             smk_enable_audio(h, (unsigned char)t, 1);
             if (first < 0)
                 first = t;
@@ -56,8 +80,6 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
     /* decode audio only here - skip the (costly) video pass; the player
      * decodes video later. Caller re-enables video after this returns. */
     smk_enable_video(h, 0);
-    int out_ch = ch[first] ? ch[first] : 1;
-    int out_rate = rate[first] ? (int)rate[first] : 22050;
 
     uint8_t *tbuf[7] = {0};
     size_t tlen[7] = {0}, tcap[7] = {0};
@@ -65,7 +87,7 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
         return;
     for (unsigned long f = 0; f < c->frame_count; f++) {
         for (int t = 0; t < 7; t++)
-            if (mask & (1 << t)) {
+            if (umask & (1 << t)) {
                 const unsigned char *a = smk_get_audio(h, (unsigned char)t);
                 unsigned long asz = smk_get_audio_size(h, (unsigned char)t);
                 if (a && asz)
@@ -75,20 +97,40 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
             smk_next(h);
     }
 
-    size_t max_samples = 0;
+    /* Tracks can differ in channel count (music stereo, voice mono) and, in
+     * principle, sample rate. Normalise each to a common output format (the
+     * max channels and max rate) before summing: mono is duplicated to every
+     * output channel, and a differing rate is nearest-neighbour resampled.
+     * Without this the mono voice's samples land at stereo positions and play
+     * at double speed. */
+    int out_ch = 1, out_rate = 0;
     for (int t = 0; t < 7; t++)
         if (tlen[t]) {
-            size_t ns = (bd[t] >= 16) ? tlen[t] / 2 : tlen[t];
-            if (ns > max_samples)
-                max_samples = ns;
+            int tch = ch[t] ? ch[t] : 1;
+            if (tch > out_ch)
+                out_ch = tch;
+            if ((int)rate[t] > out_rate)
+                out_rate = (int)rate[t];
         }
-    if (max_samples == 0) {
+    if (out_rate <= 0)
+        out_rate = 22050;
+
+    size_t out_frames = 0;
+    for (int t = 0; t < 7; t++)
+        if (tlen[t]) {
+            int tch = ch[t] ? ch[t] : 1, bps = bd[t] >= 16 ? 2 : 1;
+            size_t tframes = tlen[t] / (size_t)(bps * tch);
+            size_t of = (size_t)((double)tframes * out_rate / (rate[t] ? (double)rate[t] : out_rate));
+            if (of > out_frames)
+                out_frames = of;
+        }
+    if (out_frames == 0) {
         for (int t = 0; t < 7; t++)
             free(tbuf[t]);
         return;
     }
 
-    int32_t *acc = calloc(max_samples, sizeof(int32_t));
+    int32_t *acc = calloc(out_frames * (size_t)out_ch, sizeof(int32_t));
     if (!acc) {
         for (int t = 0; t < 7; t++)
             free(tbuf[t]);
@@ -97,24 +139,33 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
     for (int t = 0; t < 7; t++) {
         if (!tlen[t])
             continue;
-        if (bd[t] >= 16) {
-            size_t ns = tlen[t] / 2;
-            const uint8_t *p = tbuf[t];
-            for (size_t i = 0; i < ns; i++)
-                acc[i] += (int16_t)(p[i * 2] | (p[i * 2 + 1] << 8));
-        } else {
-            for (size_t i = 0; i < tlen[t]; i++)
-                acc[i] += ((int)tbuf[t][i] - 128) << 8;
+        int tch = ch[t] ? ch[t] : 1, b16 = bd[t] >= 16;
+        int bps = b16 ? 2 : 1;
+        size_t tframes = tlen[t] / (size_t)(bps * tch);
+        const uint8_t *p = tbuf[t];
+        double step = (rate[t] ? (double)rate[t] : out_rate) / out_rate; /* src frames per out frame */
+        for (size_t of = 0; of < out_frames; of++) {
+            size_t sf = (size_t)(of * step);
+            if (sf >= tframes)
+                break;
+            for (int c = 0; c < out_ch; c++) {
+                int sc = c < tch ? c : tch - 1; /* map output ch to track ch (mono -> all) */
+                size_t idx = sf * (size_t)tch + (size_t)sc;
+                int s = b16 ? (int16_t)(p[idx * 2] | (p[idx * 2 + 1] << 8))
+                            : (((int)p[idx] - 128) << 8);
+                acc[of * (size_t)out_ch + (size_t)c] += s;
+            }
         }
         free(tbuf[t]);
     }
 
-    int16_t *out = malloc(max_samples * sizeof(int16_t));
+    size_t total = out_frames * (size_t)out_ch;
+    int16_t *out = malloc(total * sizeof(int16_t));
     if (!out) {
         free(acc);
         return;
     }
-    for (size_t i = 0; i < max_samples; i++) {
+    for (size_t i = 0; i < total; i++) {
         int32_t v = acc[i];
         out[i] = (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
     }
@@ -122,7 +173,7 @@ static void extract_audio(smk_ctx *c, movie_t *m) {
 
     c->audio = out;
     m->audio_pcm = out;
-    m->audio_frames = max_samples / (size_t)out_ch;
+    m->audio_frames = out_frames;
     m->audio_rate = out_rate;
     m->audio_channels = out_ch;
 }

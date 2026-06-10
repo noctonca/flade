@@ -16,4 +16,8 @@
  * outlive the movie (libsmacker reads it on demand). Returns 0 on success. */
 int smk_movie_open(movie_t *m, const uint8_t *data, size_t size);
 
+/* Choose which voice track (1..6) to mix with the music; -1 = first present.
+ * Set before opening the movie. */
+void smk_set_voice(int track);
+
 #endif /* FLADE_SMK_H */
