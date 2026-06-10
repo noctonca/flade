@@ -47,6 +47,7 @@ static uint32_t fnv1a(uint32_t h, const void *p, size_t n) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IONBF, 0); /* flush digests even if a sanitizer aborts at exit */
     const char *path = NULL, *cd = NULL;
     int index = -1; /* >=0 => treat the loaded buffer as an HQR, play entry n */
     int quiet = 0;
@@ -146,11 +147,16 @@ int main(int argc, char **argv) {
 
     double adur = mv.audio_rate ? (double)mv.audio_frames / mv.audio_rate : 0.0;
     double vdur = mv.fps > 0 ? nframes / mv.fps : 0.0;
-    if (!quiet)
+    if (quiet) {
+        /* machine-readable: just the digest on a clean decode (for the sweep) */
+        if (rc == 0)
+            printf("%08x\n", digest);
+    } else {
         printf("%s %s %dx%d %d/%d fps=%.2f digest=%08x audio=%.2fs/%dch%s\n",
                rc == 0 ? "OK  " : "FAIL", kind, mv.width, mv.height, nframes, mv.num_frames, mv.fps,
                digest, adur, mv.audio_channels,
                mv.audio_pcm ? (adur > vdur - 0.6 && adur < vdur + 0.6 ? " sync" : " DRIFT") : "");
+    }
 
     mv.close(&mv);
     free(buf);
