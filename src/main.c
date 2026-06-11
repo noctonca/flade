@@ -22,6 +22,7 @@
 #include "audio.h"
 #include "iso9660.h"
 #include "source.h"
+#include "gui.h"
 
 #ifndef FLADE_VERSION
 #define FLADE_VERSION "dev"
@@ -183,6 +184,15 @@ int main(int argc, char **argv) {
             iso_close(iso);
             return 0;
         }
+    }
+
+    /* Bare `flade` (no movie, no disc): open the windowed start screen and let
+     * the user pick something to play. The picked path falls through to the
+     * normal load/play path below. */
+    if (!movie && !cd_path) {
+        movie = gui_pick_movie();
+        if (!movie)
+            return 0; /* window closed without a choice */
     }
 
     if (!movie) {

@@ -45,11 +45,15 @@ if(SDL3_FOUND)
   add_executable(flade
     src/main.c
     src/source.c
+    src/gui.c
     src/player.c
     src/audio.c
     src/midi.c
     src/xmidi.c
     ${DECODER_SRC})
+  # gui.c compiles the vendored Nuklear single-header toolkit.
+  set_source_files_properties(src/gui.c PROPERTIES COMPILE_OPTIONS
+    $<IF:$<C_COMPILER_ID:MSVC>,/w,-w>)
   # Link the static SDL3 when it's the one that was built (release binaries),
   # otherwise the shared one (a normal dev build against system SDL3).
   if(TARGET SDL3::SDL3-static)
