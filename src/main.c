@@ -131,7 +131,7 @@ typedef struct {
  * movie ended or the user asked to go back (Esc), 1 when the user closed the
  * window (quit the app). */
 static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
-                      int video_index, const player_opts *o);
+                      int video_index, int has_list, const player_opts *o);
 
 int main(int argc, char **argv) {
     const char *movie = NULL;
@@ -227,11 +227,14 @@ int main(int argc, char **argv) {
                 break; /* window closed */
             cur_movie = c.movie;
             cur_cd = c.cd_path;
-            cur_index = c.video_index >= 0 ? c.video_index : 0;
+            int is_hqr = (c.video_index >= 0); /* an entry of a loose movie-HQR */
+            cur_index = is_hqr ? c.video_index : 0;
+            /* remember the container (disc or movie-HQR) to return to its list */
             SDL_free(last_disc);
-            last_disc = cur_cd ? SDL_strdup(cur_cd) : NULL;
+            last_disc = cur_cd ? SDL_strdup(cur_cd) : (is_hqr ? SDL_strdup(cur_movie) : NULL);
         }
-        int quit_app = run_player(win, ren, cur_movie, cur_cd, cur_index, &opts);
+        int has_list = !from_cli && last_disc != NULL;
+        int quit_app = run_player(win, ren, cur_movie, cur_cd, cur_index, has_list, &opts);
         if (from_cli || quit_app)
             break;
         cur_movie = NULL;
@@ -247,7 +250,7 @@ int main(int argc, char **argv) {
 }
 
 static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
-                      int video_index, const player_opts *o) {
+                      int video_index, int has_list, const player_opts *o) {
     const int no_audio = o->no_audio, scale = o->scale;
     const float volume = o->volume;
     const char *flasamp_path = o->flasamp_path, *midi_path = o->midi_path,
@@ -300,6 +303,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         movie_buf = read_file(movie, &movie_size);
         if (!movie_buf) {
             fprintf(stderr, "flade: cannot open '%s'\n", movie);
+            gui_set_status("couldn't open that file");
             return 0;
         }
     }
@@ -319,6 +323,10 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         } else {
             free(entry);
             fprintf(stderr, "flade: '%s' is not a movie I can play\n", movie);
+            char msg[160];
+            const char *b = strrchr(movie, '/');
+            snprintf(msg, sizeof(msg), "'%s' isn't a movie flade can play", b ? b + 1 : movie);
+            gui_set_status(msg);
             free(movie_buf);
             if (iso)
                 iso_close(iso);
@@ -327,6 +335,13 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
     }
     printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv.width, mv.height,
            mv.num_frames, mv.fps);
+    /* window title: the movie's name */
+    {
+        const char *b = strrchr(movie, '/');
+        char title[160];
+        snprintf(title, sizeof(title), "flade - %s", b ? b + 1 : movie);
+        SDL_SetWindowTitle(win, title);
+    }
 
     /* Transitional: FLA sound effects still come from the cue arrays. */
     fla_t *cues = fla_from_movie(&mv);
@@ -702,6 +717,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         t.speed = speed;
         t.n_voices = have_voices ? voices.count : 0;
         t.active_voice = active_voice;
+        t.has_list = has_list;
         t.seek_to = -1.0;
         t.set_voice = -1;
         t.visible = paused || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;

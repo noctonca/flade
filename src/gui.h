@@ -28,6 +28,10 @@ void gui_shutdown(void);
  * return to its list after a movie. */
 gui_choice gui_browse(const char *initial);
 
+/* Show a one-line message on the start screen (e.g. why a file wouldn't play).
+ * Cleared when the user next opens or drops something. */
+void gui_set_status(const char *msg);
+
 /* The playback transport, shared between the play loop and the overlay. The
  * caller fills the state fields each frame; the overlay reads them to draw, and
  * writes the request fields, which the caller applies (and which reset next
@@ -41,7 +45,8 @@ typedef struct {
     double speed;
     int n_voices; /* SMK language tracks, 0 if none */
     int active_voice;
-    int visible; /* draw the bar this frame? (auto-hide) */
+    int has_list; /* 1: returning goes to a browse list (label the back button) */
+    int visible;  /* draw the bar this frame? (auto-hide) */
     /* requests out */
     double seek_to;        /* >= 0: jump to this frame */
     int toggle_pause;      /* 1: flip pause */

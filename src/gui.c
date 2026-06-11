@@ -96,6 +96,11 @@ static SDL_Window *g_win;
 static SDL_Renderer *g_ren;
 static struct nk_context *g_ctx;
 static float g_scale = 1.0f;
+static char g_status[160]; /* a transient message for the start screen */
+
+void gui_set_status(const char *msg) {
+    snprintf(g_status, sizeof(g_status), "%s", msg ? msg : "");
+}
 
 void gui_init(SDL_Window *win, SDL_Renderer *ren) {
     g_win = win;
@@ -130,6 +135,7 @@ gui_choice gui_browse(const char *initial) {
     if (!ctx)
         return result;
     SDL_SetRenderScale(ren, scale, scale);
+    SDL_SetWindowTitle(win, "flade"); /* reset from a movie title */
 
     /* The first filter is the default, so make it everything flade can read - a
      * disc image, an archive, or a loose movie - which is what the user expects
@@ -156,7 +162,9 @@ gui_choice gui_browse(const char *initial) {
      * UI be captured and reviewed without a person at the keyboard. */
     const char *shot_path = getenv("FLADE_SHOT");
     int shot_frames = 0;
-    const char *open_env = getenv("FLADE_OPEN");
+    static int open_consumed = 0; /* FLADE_OPEN fires once, not every browse */
+    const char *open_env = open_consumed ? NULL : getenv("FLADE_OPEN");
+    open_consumed = 1;
     if (initial)
         pending = SDL_strdup(initial); /* re-show this disc/HQR (back-to-list) */
     else if (open_env)
@@ -175,6 +183,7 @@ gui_choice gui_browse(const char *initial) {
          * movie-HQR (VIDEO.HQR) both open a browse list; anything else is a
          * loose movie file we hand straight back. */
         if (pending) {
+            g_status[0] = 0; /* a fresh pick clears the last message */
             iso9660_t *iso = iso_open(pending);
             int nh = 0;
             if (iso) {
@@ -205,9 +214,16 @@ gui_choice gui_browse(const char *initial) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT)
                 running = 0;
-            else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE)
-                running = 0;
-            else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data && !pending)
+            else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) {
+                if (container) { /* leave the list, back to the start screen */
+                    SDL_free(container);
+                    container = NULL;
+                    n_items = 0;
+                    g_status[0] = 0;
+                } else {
+                    running = 0; /* quit from the start screen */
+                }
+            } else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data && !pending)
                 pending = SDL_strdup(e.drop.data);
             SDL_ConvertEventToRenderCoordinates(ren, &e);
             nk_sdl_handle_event(ctx, &e);
@@ -227,6 +243,8 @@ gui_choice gui_browse(const char *initial) {
                 nk_layout_row_dynamic(ctx, h - 96, 1);
                 if (nk_group_begin(ctx, "list", NK_WINDOW_BORDER)) {
                     nk_layout_row_dynamic(ctx, 26, 1);
+                    if (n_items == 0)
+                        nk_label(ctx, "(no movies found here)", NK_TEXT_CENTERED);
                     for (int i = 0; i < n_items; i++) {
                         if (nk_button_label(ctx, items[i].name)) {
                             if (container_is_disc) {
@@ -266,6 +284,12 @@ gui_choice gui_browse(const char *initial) {
                 }
                 nk_layout_row_dynamic(ctx, 22, 1);
                 nk_label(ctx, "...or drag a movie or disc onto this window", NK_TEXT_CENTERED);
+                if (g_status[0]) {
+                    nk_layout_row_dynamic(ctx, 18, 1);
+                    nk_spacing(ctx, 1);
+                    nk_layout_row_dynamic(ctx, 22, 1);
+                    nk_label_colored(ctx, g_status, NK_TEXT_CENTERED, nk_rgb(232, 178, 92));
+                }
             }
         }
         nk_end(ctx);
@@ -330,7 +354,7 @@ void gui_overlay(transport_ui *t) {
             /* row 2: back, speed, fullscreen */
             float r2[] = {0.3f, 0.4f, 0.3f};
             nk_layout_row(ctx, NK_DYNAMIC, 26, 3, r2);
-            if (nk_button_label(ctx, "back to list"))
+            if (nk_button_label(ctx, t->has_list ? "back to list" : "back"))
                 t->back = 1;
             nk_labelf(ctx, NK_TEXT_CENTERED, "%.2fx", t->speed);
             if (nk_button_label(ctx, "fullscreen"))
