@@ -342,7 +342,7 @@ void gui_overlay(transport_ui *t) {
             /* row 1: play/pause, seek, time */
             float r1[] = {0.14f, 0.64f, 0.22f};
             nk_layout_row(ctx, NK_DYNAMIC, 30, 3, r1);
-            if (nk_button_label(ctx, t->paused ? "Play" : "Pause"))
+            if (nk_button_label(ctx, t->ended ? "Replay" : t->paused ? "Play" : "Pause"))
                 t->toggle_pause = 1;
             float sf = (float)(int)t->pos; /* integer frame, so the step doesn't self-trigger */
             float maxf = (float)(t->num_frames > 1 ? t->num_frames - 1 : 1);

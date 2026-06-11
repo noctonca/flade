@@ -471,6 +471,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
     int paused = 0;
     int quit = 0;
     int quit_app = 0; /* return value: 1 = user closed the window (exit the app) */
+    int ended = 0;    /* holding on the last frame after playing through */
     int have_frame = 0;
     int was_audio_active = 0; /* ACF stream was playing last iteration */
     int seeked = 0;           /* a key jumped the playhead this frame */
@@ -481,6 +482,8 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
     Uint64 prev = SDL_GetTicksNS();
     Uint64 last_input_ns = prev; /* for auto-hiding the overlay */
     const char *shot_path = getenv("FLADE_SHOT");
+    const char *shot_at_env = getenv("FLADE_SHOT_AT"); /* loop frame to grab at */
+    int shot_at = shot_at_env ? atoi(shot_at_env) : 12;
     int shot_frames = 0;
 
     while (!quit && pl) {
@@ -539,12 +542,13 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                     midi_fading = 1;
             }
         } else if (player_complete(pl) && player_count(pl) > 0) {
-            /* played to the end: show the last frame, then return - the top loop
-             * goes back to the browse list (or exits, for a CLI play) */
+            /* played to the end: stop and hold on the last frame. The overlay's
+             * button becomes Replay; the keys still rewind / scrub. */
             idx = player_count(pl) - 1;
             pos = (double)idx;
+            paused = 1;
+            ended = 1;
             have_frame = player_get(pl, idx, &fr);
-            quit = 1;
         } else if (!have_frame) {
             fprintf(stderr, "flade: no frames decoded\n");
             break;
@@ -682,6 +686,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                     break;
                 case SDLK_R: /* reverse direction */
                     dir = -dir;
+                    ended = 0;
                     audio_stop_all();
                     break;
                 case SDLK_COMMA: /* step one frame back */
@@ -689,6 +694,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                     pos -= 1.0;
                     if (pos < 0.0)
                         pos = 0.0;
+                    ended = 0;
                     seeked = 1;
                     break;
                 case SDLK_PERIOD: /* step one frame forward */
@@ -711,6 +717,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                 case SDLK_BACKSPACE: /* restart */
                     pos = 0.0;
                     dir = 1;
+                    ended = 0;
                     audio_stop_all();
                     seeked = 1;
                     break;
@@ -731,17 +738,28 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         t.n_voices = have_voices ? voices.count : 0;
         t.active_voice = active_voice;
         t.has_list = has_list;
-        t.visible = paused || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;
+        t.ended = ended;
+        t.visible = paused || ended || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;
         gui_overlay(&t);
 
         /* apply transport requests from the keyboard or the overlay, in one place */
         if (t.toggle_pause) {
-            paused = !paused;
-            if (paused)
+            if (ended) { /* the play button is Replay: restart from the top */
+                pos = 0.0;
+                dir = 1;
+                paused = 0;
+                ended = 0;
+                seeked = 1;
                 audio_stop_all();
+            } else {
+                paused = !paused;
+                if (paused)
+                    audio_stop_all();
+            }
         }
         if (t.seek_to >= 0) {
             pos = t.seek_to;
+            ended = 0;
             audio_stop_all();
             seeked = 1;
         }
@@ -762,7 +780,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         if (t.back)
             quit = 1; /* back to the list (or exit, for a CLI play) */
 
-        if (shot_path && ++shot_frames >= 12) { /* dev: capture the play screen */
+        if (shot_path && ++shot_frames >= shot_at) { /* dev: capture the play screen */
             SDL_Surface *snap = SDL_RenderReadPixels(ren, NULL);
             if (snap) {
                 SDL_SaveBMP(snap, shot_path);

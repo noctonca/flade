@@ -46,6 +46,7 @@ typedef struct {
     int n_voices; /* SMK language tracks, 0 if none */
     int active_voice;
     int has_list; /* 1: returning goes to a browse list (label the back button) */
+    int ended;    /* 1: held on the last frame (the play button becomes Replay) */
     int visible;  /* draw the bar this frame? (auto-hide) */
     /* requests out */
     double seek_to;        /* >= 0: jump to this frame */
