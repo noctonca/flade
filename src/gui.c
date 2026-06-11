@@ -141,6 +141,15 @@ gui_choice gui_run(void) {
     int n_items = 0;
     int dialog_open = 0, running = 1;
 
+    /* dev hooks for headless screenshots: FLADE_OPEN=<path> auto-opens it on
+     * start; FLADE_SHOT=<file.bmp> saves the rendered frame and exits. Lets the
+     * UI be captured and reviewed without a person at the keyboard. */
+    const char *shot_path = getenv("FLADE_SHOT");
+    int shot_frames = 0;
+    const char *open_env = getenv("FLADE_OPEN");
+    if (open_env)
+        pending = SDL_strdup(open_env);
+
     while (running) {
         if (dialog_open && SDL_GetAtomicInt(&pick.done)) {
             dialog_open = 0;
@@ -252,6 +261,14 @@ gui_choice gui_run(void) {
         SDL_SetRenderDrawColor(ren, 18, 18, 24, 255);
         SDL_RenderClear(ren);
         nk_sdl_render(ctx, NK_ANTI_ALIASING_ON);
+        if (shot_path && ++shot_frames >= 3) { /* let the UI settle, then grab it */
+            SDL_Surface *snap = SDL_RenderReadPixels(ren, NULL);
+            if (snap) {
+                SDL_SaveBMP(snap, shot_path);
+                SDL_DestroySurface(snap);
+            }
+            running = 0;
+        }
         SDL_RenderPresent(ren);
         SDL_DelayNS(8 * 1000000);
     }
