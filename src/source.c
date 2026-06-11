@@ -136,19 +136,14 @@ static void iso_find_basename(iso9660_t *iso, const char *basename, char *out, s
  * names in VIDEO.HQR entry order. Returns the count. */
 #define MAX_VIDEO_NAMES 128
 #define RESS_ACFLIST 48
-static int lba2_video_names(iso9660_t *iso, char names[][32]) {
-    char ress[1024];
-    iso_find_basename(iso, "RESS.HQR", ress, sizeof(ress));
-    if (!ress[0])
-        return 0;
-    uint8_t *rh = NULL;
-    size_t rsz = 0;
-    if (iso_read(iso, ress, &rh, &rsz) != 0)
-        return 0;
+
+/* Parse the ACF name list (RESS.HQR entry 48): whitespace-separated names in
+ * VIDEO.HQR entry order, 0x1A-terminated. Returns the count. */
+static int parse_acflist(const uint8_t *ress, size_t rsz, char names[][32]) {
     int count = 0;
     uint8_t *lst = NULL;
     size_t lsz = 0;
-    if (hqr_entry(rh, rsz, RESS_ACFLIST, &lst, &lsz) == 0) {
+    if (hqr_entry(ress, rsz, RESS_ACFLIST, &lst, &lsz) == 0) {
         size_t i = 0;
         while (i < lsz && count < MAX_VIDEO_NAMES) {
             while (i < lsz && lst[i] <= 32)
@@ -163,7 +158,94 @@ static int lba2_video_names(iso9660_t *iso, char names[][32]) {
         }
         free(lst);
     }
+    return count;
+}
+
+static int lba2_video_names(iso9660_t *iso, char names[][32]) {
+    char ress[1024];
+    iso_find_basename(iso, "RESS.HQR", ress, sizeof(ress));
+    if (!ress[0])
+        return 0;
+    uint8_t *rh = NULL;
+    size_t rsz = 0;
+    if (iso_read(iso, ress, &rh, &rsz) != 0)
+        return 0;
+    int count = parse_acflist(rh, rsz, names);
     free(rh);
+    return count;
+}
+
+/* names from a RESS.HQR near a loose VIDEO.HQR: alongside it, or one directory
+ * up (retail LBA2 keeps VIDEO.HQR in a VIDEO/ subfolder and RESS.HQR above it). */
+static int sibling_acflist(const char *hqr_path, char names[][32]) {
+    const char *slash = strrchr(hqr_path, '/');
+#ifdef _WIN32
+    const char *bslash = strrchr(hqr_path, '\\');
+    if (bslash > slash)
+        slash = bslash;
+#endif
+    size_t dlen = slash ? (size_t)(slash - hqr_path) + 1 : 0;
+    if (dlen >= 1000)
+        return 0;
+    static const char *cands[] = {"RESS.HQR", "../RESS.HQR"};
+    for (int c = 0; c < 2; c++) {
+        char ress[1100];
+        memcpy(ress, hqr_path, dlen);
+        snprintf(ress + dlen, sizeof(ress) - dlen, "%s", cands[c]);
+        size_t rsz = 0;
+        uint8_t *rh = read_file(ress, &rsz);
+        if (rh) {
+            int count = parse_acflist(rh, rsz, names);
+            free(rh);
+            if (count > 0)
+                return count;
+        }
+    }
+    return 0;
+}
+
+/* true if the buffer begins with an FLA / ACF / SMK movie magic */
+static int is_movie_magic(const uint8_t *d, size_t n) {
+    if (n >= 4 && (memcmp(d, "SMK2", 4) == 0 || memcmp(d, "SMK4", 4) == 0 ||
+                   memcmp(d, "V1.3", 4) == 0))
+        return 1;
+    return n >= 8 && memcmp(d, "FrameLen", 8) == 0;
+}
+
+int source_hqr_movies(const char *path, source_item *items, int cap) {
+    size_t sz = 0;
+    uint8_t *buf = read_file(path, &sz);
+    if (!buf)
+        return 0;
+    int n = hqr_count(buf, sz);
+    if (n <= 0) {
+        free(buf);
+        return 0;
+    }
+    /* confirm it's a movie container by sniffing the first entry */
+    uint8_t *e0 = NULL;
+    size_t e0sz = 0;
+    int is_movies = hqr_entry(buf, sz, 0, &e0, &e0sz) == 0 && is_movie_magic(e0, e0sz);
+    free(e0);
+    free(buf);
+    if (!is_movies)
+        return 0;
+
+    char names[MAX_VIDEO_NAMES][32];
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    int nv = ieq(base, "VIDEO.HQR") ? sibling_acflist(path, names) : 0;
+
+    int count = 0;
+    for (int i = 0; i < n && count < cap; i++) {
+        source_item *it = &items[count++];
+        if (i < nv && names[i][0])
+            snprintf(it->name, sizeof(it->name), "%s", names[i]);
+        else
+            snprintf(it->name, sizeof(it->name), "entry %d", i);
+        it->arg[0] = 0;
+        it->index = i;
+    }
     return count;
 }
 
@@ -197,6 +279,7 @@ static void movies_walk_cb(void *ud, const char *path, uint32_t size) {
     source_item *it = &m->items[m->count++];
     snprintf(it->name, sizeof(it->name), "%s", base);
     snprintf(it->arg, sizeof(it->arg), "%s", path); /* in-image path, leading '/' */
+    it->index = -1;                                 /* played by name/path, not index */
 }
 
 int source_movies(iso9660_t *iso, source_item *items, int cap) {
@@ -213,6 +296,7 @@ int source_movies(iso9660_t *iso, source_item *items, int cap) {
             source_item *it = &items[mc.count++];
             snprintf(it->name, sizeof(it->name), "%s", names[i]);
             snprintf(it->arg, sizeof(it->arg), "%s", names[i]);
+            it->index = -1;
         }
     }
     return mc.count;

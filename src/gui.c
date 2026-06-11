@@ -91,7 +91,7 @@ static void SDLCALL dialog_cb(void *userdata, const char *const *filelist, int f
 #define GUI_MAX_ITEMS 512
 
 gui_choice gui_run(void) {
-    gui_choice result = {NULL, NULL};
+    gui_choice result = {NULL, NULL, -1};
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         SDL_Log("flade: SDL_Init failed: %s", SDL_GetError());
@@ -133,9 +133,10 @@ gui_choice gui_run(void) {
     pick.path = NULL;
     SDL_SetAtomicInt(&pick.done, 0);
 
-    char *pending = NULL;            /* a path awaiting classification (disc vs loose) */
-    char *disc = NULL;               /* the open CD image (browse state) */
-    char disc_name[128] = {0};       /* its basename, for the heading */
+    char *pending = NULL;       /* a path awaiting classification */
+    char *container = NULL;     /* the open disc or movie-HQR (browse state) */
+    char container_name[128] = {0};
+    int container_is_disc = 0;
     static source_item items[GUI_MAX_ITEMS];
     int n_items = 0;
     int dialog_open = 0, running = 1;
@@ -149,19 +150,28 @@ gui_choice gui_run(void) {
                 pick.path = NULL;
             }
         }
-        /* classify a freshly picked/dropped path */
+        /* classify a freshly picked/dropped path: a CD image and a loose
+         * movie-HQR (VIDEO.HQR) both open a browse list; anything else is a
+         * loose movie file we hand straight back. */
         if (pending) {
             iso9660_t *iso = iso_open(pending);
-            if (iso) { /* a CD image -> browse its movies */
-                free(disc);
-                disc = pending;
-                pending = NULL;
+            int nh = 0;
+            if (iso) {
                 n_items = source_movies(iso, items, GUI_MAX_ITEMS);
                 iso_close(iso);
-                const char *b = strrchr(disc, '/');
-                snprintf(disc_name, sizeof(disc_name), "%s", b ? b + 1 : disc);
-            } else { /* a loose movie file -> done */
-                result.movie = pending;
+                container_is_disc = 1;
+            } else if ((nh = source_hqr_movies(pending, items, GUI_MAX_ITEMS)) > 0) {
+                n_items = nh;
+                container_is_disc = 0;
+            }
+            if (iso || nh > 0) {
+                SDL_free(container);
+                container = pending;
+                pending = NULL;
+                const char *b = strrchr(container, '/');
+                snprintf(container_name, sizeof(container_name), "%s", b ? b + 1 : container);
+            } else {
+                result.movie = pending; /* a plain loose movie */
                 pending = NULL;
                 running = 0;
             }
@@ -188,19 +198,24 @@ gui_choice gui_run(void) {
         float w = ow / (scale > 0 ? scale : 1), h = oh / (scale > 0 ? scale : 1);
 
         if (nk_begin(ctx, "flade", nk_rect(0, 0, w, h), NK_WINDOW_BORDER)) {
-            if (disc) {
-                /* ----- browse a disc's cinematics ----- */
+            if (container) {
+                /* ----- browse a disc / movie-HQR ----- */
                 nk_layout_row_dynamic(ctx, 28, 1);
-                nk_labelf(ctx, NK_TEXT_LEFT, "%s  -  %d movie%s (click to play)", disc_name,
+                nk_labelf(ctx, NK_TEXT_LEFT, "%s  -  %d movie%s (click to play)", container_name,
                           n_items, n_items == 1 ? "" : "s");
                 nk_layout_row_dynamic(ctx, h - 96, 1);
                 if (nk_group_begin(ctx, "list", NK_WINDOW_BORDER)) {
                     nk_layout_row_dynamic(ctx, 26, 1);
                     for (int i = 0; i < n_items; i++) {
                         if (nk_button_label(ctx, items[i].name)) {
-                            result.cd_path = disc;
-                            disc = NULL; /* ownership moves to result */
-                            result.movie = SDL_strdup(items[i].arg);
+                            if (container_is_disc) {
+                                result.cd_path = container; /* play --cd <disc> <arg> */
+                                result.movie = SDL_strdup(items[i].arg);
+                            } else {
+                                result.movie = container; /* play <hqr> --index N */
+                                result.video_index = items[i].index;
+                            }
+                            container = NULL; /* ownership moved to result */
                             running = 0;
                             break;
                         }
@@ -242,7 +257,7 @@ gui_choice gui_run(void) {
     }
 
     SDL_free(pending);
-    SDL_free(disc); /* the un-chosen disc, if any (a chosen one moved to result) */
+    SDL_free(container); /* the un-chosen disc/HQR, if any (a chosen one moved to result) */
     nk_sdl_shutdown(ctx);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);

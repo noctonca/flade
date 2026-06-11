@@ -181,7 +181,9 @@ int main(int argc, char **argv) {
         if (!c.movie)
             return 0; /* window closed without a choice */
         movie = c.movie;
-        cd_path = c.cd_path; /* NULL for a loose movie */
+        cd_path = c.cd_path;             /* NULL for a loose movie */
+        if (c.video_index >= 0)          /* a loose movie-HQR entry */
+            video_index = c.video_index; /* used by the HQR-container fallback */
     }
 
     iso9660_t *iso = NULL;

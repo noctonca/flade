@@ -13,6 +13,7 @@
 typedef struct {
     char *cd_path;
     char *movie;
+    int video_index; /* entry to play when `movie` is a loose movie-HQR, else -1 */
 } gui_choice;
 
 /* Open the start screen: pick a movie file, or open a disc and pick from its

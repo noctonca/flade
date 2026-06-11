@@ -18,16 +18,23 @@ uint8_t *read_file(const char *path, size_t *size);
  * (named from the RESS.HQR catalogue). `label` is shown in the heading. */
 void source_list_movies(iso9660_t *iso, const char *label);
 
-/* A playable movie in an image: a display name and the argument to play it with
- * (a name or in-image path that source_resolve / the player understands). */
+/* A playable movie in a list: a display name plus how to play it. For an image
+ * movie, `arg` is a name / in-image path (and index is -1). For an entry of a
+ * loose movie-HQR, `index` is the entry number (and arg is unused). */
 typedef struct {
     char name[64];
     char arg[260];
+    int index;
 } source_item;
 
 /* Fill `items` (up to `cap`) with the image's movies - loose .fla/.acf and the
  * VIDEO.HQR cinematics. Returns the count. */
 int source_movies(iso9660_t *iso, source_item *items, int cap);
+
+/* If `path` is a loose movie-HQR (e.g. LBA2's VIDEO.HQR), fill `items` with its
+ * entries by index - named from a sibling RESS.HQR catalogue when present, else
+ * numbered. Returns the count, or 0 if `path` is not a movie-HQR. */
+int source_hqr_movies(const char *path, source_item *items, int cap);
 
 /* Resolve a bare movie name within an image to an in-image path (sans leading
  * '/'). On success returns 0 and fills `inpath`; if the name is an LBA2
