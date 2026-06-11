@@ -480,7 +480,7 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
     float midi_gain = 1.0f;
     movie_frame fr;
     Uint64 prev = SDL_GetTicksNS();
-    Uint64 last_input_ns = prev; /* for auto-hiding the overlay */
+    Uint64 last_input_ns = 0; /* 0 = no mouse activity yet; the overlay starts hidden */
     const char *shot_path = getenv("FLADE_SHOT");
     const char *shot_at_env = getenv("FLADE_SHOT_AT"); /* loop frame to grab at */
     int shot_at = shot_at_env ? atoi(shot_at_env) : 12;
@@ -739,7 +739,8 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         t.active_voice = active_voice;
         t.has_list = has_list;
         t.ended = ended;
-        t.visible = paused || ended || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;
+        t.visible =
+            paused || ended || (last_input_ns && (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL);
         gui_overlay(&t);
 
         /* apply transport requests from the keyboard or the overlay, in one place */
