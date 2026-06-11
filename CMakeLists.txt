@@ -53,12 +53,24 @@ if(SDL3_FOUND)
   # Link the static SDL3 when it's the one that was built (release binaries),
   # otherwise the shared one (a normal dev build against system SDL3).
   if(TARGET SDL3::SDL3-static)
-    target_link_libraries(flade PRIVATE SDL3::SDL3-static)
+    set(SDL3_LIB SDL3::SDL3-static)
   else()
-    target_link_libraries(flade PRIVATE SDL3::SDL3)
+    set(SDL3_LIB SDL3::SDL3)
   endif()
+  target_link_libraries(flade PRIVATE ${SDL3_LIB})
   target_compile_definitions(flade PRIVATE FLADE_VERSION="${PROJECT_VERSION}")
   list(APPEND FLADE_TARGETS flade)
+
+  # GUI spike: proves the vendored Nuklear core + the official SDL3 renderer
+  # backend (the groundwork for a future --gui). Built with -w since it compiles
+  # the vendored single-header GUI library.
+  add_executable(gui_spike tools/gui_spike.c)
+  target_include_directories(gui_spike PRIVATE src)
+  target_link_libraries(gui_spike PRIVATE ${SDL3_LIB})
+  if(NOT WIN32)
+    target_link_libraries(gui_spike PRIVATE m)
+  endif()
+  target_compile_options(gui_spike PRIVATE $<IF:$<C_COMPILER_ID:MSVC>,/w,-w>)
 else()
   message(STATUS "SDL3 not found - building headless tools only (movscan, fladump), not flade")
 endif()

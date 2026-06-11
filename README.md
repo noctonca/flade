@@ -207,7 +207,9 @@ licence:
 - MIDI uses vendored `src/xmidi.c` (XMI→SMF, GPLv2, from TwinEngine /
   ScummVM / Exult), `src/tml.h` (MIDI loader, zlib) and `src/tsf.h`
   (TinySoundFont synth, MIT), both by Bernhard Schelling;
-- Smacker decoding uses vendored `src/libsmacker/` (LGPL 2.1).
+- Smacker decoding uses vendored `src/libsmacker/` (LGPL 2.1);
+- `src/nuklear/` is vendored Nuklear (public domain) with its official SDL3
+  renderer backend - groundwork for a future `--gui` (see `tools/gui_spike.c`).
 
 The remaining code (CD-image reader, VOC decoder, SDL3 video/audio, CLI) is
 original to this project, but because the parts above are derived from GPLv2
