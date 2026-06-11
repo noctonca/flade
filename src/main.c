@@ -438,6 +438,9 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
     float midi_gain = 1.0f;
     movie_frame fr;
     Uint64 prev = SDL_GetTicksNS();
+    Uint64 last_input_ns = prev; /* for auto-hiding the overlay */
+    const char *shot_path = getenv("FLADE_SHOT");
+    int shot_frames = 0;
 
     while (!quit && pl) {
         Uint64 now = SDL_GetTicksNS();
@@ -593,11 +596,13 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
         SDL_RenderClear(ren);
         SDL_RenderTexture(ren, tex, NULL, &dst);
-        SDL_RenderPresent(ren);
 
-        /* input / transport */
+        /* input / transport: keyboard plus the overlay's mouse */
+        gui_input_begin();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+                last_input_ns = SDL_GetTicksNS();
             if (e.type == SDL_EVENT_QUIT) {
                 quit = 1;
                 quit_app = 1; /* closing the window exits flade, not just the movie */
@@ -684,7 +689,60 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                     break;
                 }
             }
+            gui_input_event(&e);
         }
+        gui_input_end();
+
+        /* transport overlay - shows on mouse activity, hides ~2.5s after */
+        transport_ui t = {0};
+        t.pos = pos;
+        t.num_frames = mv.num_frames;
+        t.fps = mv.fps;
+        t.paused = paused;
+        t.speed = speed;
+        t.n_voices = have_voices ? voices.count : 0;
+        t.active_voice = active_voice;
+        t.seek_to = -1.0;
+        t.set_voice = -1;
+        t.visible = paused || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;
+        gui_overlay(&t);
+        if (t.toggle_pause) {
+            paused = !paused;
+            if (paused)
+                audio_stop_all();
+        }
+        if (t.seek_to >= 0) {
+            pos = t.seek_to;
+            audio_stop_all();
+            seeked = 1;
+        }
+        if (t.set_voice >= 0 && have_voices && t.set_voice < voices.count &&
+            t.set_voice != active_voice) {
+            active_voice = t.set_voice;
+            if (was_audio_active) { /* swap the voice channel; music plays on */
+                size_t sf = (size_t)((double)(int)pos / mv.fps * voices.rate);
+                audio_voice_start(voices.pcm[active_voice], voices.frames, voices.rate,
+                                  voices.channels, sf, volume);
+                audio_voice_set_paused(paused);
+            }
+        }
+        if (t.toggle_fullscreen) {
+            bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
+            SDL_SetWindowFullscreen(win, !fs);
+        }
+        if (t.back)
+            quit = 1; /* back to the list (or exit, for a CLI play) */
+
+        if (shot_path && ++shot_frames >= 12) { /* dev: capture the play screen */
+            SDL_Surface *snap = SDL_RenderReadPixels(ren, NULL);
+            if (snap) {
+                SDL_SaveBMP(snap, shot_path);
+                SDL_DestroySurface(snap);
+            }
+            quit = 1;
+            quit_app = 1;
+        }
+        SDL_RenderPresent(ren);
 
         SDL_DelayNS(6 * 1000000); /* ~165 Hz: responsive input, low CPU */
     }

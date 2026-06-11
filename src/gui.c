@@ -289,3 +289,64 @@ gui_choice gui_browse(const char *initial) {
     SDL_free(container); /* the un-chosen disc/HQR, if any (a chosen one moved to result) */
     return result;       /* window/context persist; main owns them */
 }
+
+/* ----- the in-playback transport overlay ---------------------------------- */
+void gui_input_begin(void) {
+    if (g_ctx)
+        nk_input_begin(g_ctx);
+}
+void gui_input_event(SDL_Event *e) {
+    if (g_ctx)
+        nk_sdl_handle_event(g_ctx, e);
+}
+void gui_input_end(void) {
+    if (g_ctx)
+        nk_input_end(g_ctx);
+}
+
+void gui_overlay(transport_ui *t) {
+    static const char *LANG[] = {"FR", "DE", "EN", "L4"};
+    struct nk_context *ctx = g_ctx;
+    if (!ctx)
+        return;
+    if (t->visible) {
+        int ow, oh;
+        SDL_GetRenderOutputSize(g_ren, &ow, &oh);
+        float barh = 80.0f + (t->n_voices > 0 ? 30.0f : 0.0f);
+        if (nk_begin(ctx, "transport", nk_rect(0, oh - barh, (float)ow, barh),
+                     NK_WINDOW_NO_SCROLLBAR)) {
+            /* row 1: play/pause, seek, time */
+            float r1[] = {0.14f, 0.64f, 0.22f};
+            nk_layout_row(ctx, NK_DYNAMIC, 30, 3, r1);
+            if (nk_button_label(ctx, t->paused ? "Play" : "Pause"))
+                t->toggle_pause = 1;
+            float sf = (float)(int)t->pos; /* integer frame, so the step doesn't self-trigger */
+            float maxf = (float)(t->num_frames > 1 ? t->num_frames - 1 : 1);
+            if (nk_slider_float(ctx, 0.0f, &sf, maxf, 1.0f))
+                t->seek_to = sf; /* user dragged the playhead */
+            int cs = t->fps > 0 ? (int)(t->pos / t->fps) : 0;
+            int ts = t->fps > 0 ? (int)((t->num_frames - 1) / t->fps) : 0;
+            nk_labelf(ctx, NK_TEXT_RIGHT, "%d:%02d / %d:%02d", cs / 60, cs % 60, ts / 60, ts % 60);
+            /* row 2: back, speed, fullscreen */
+            float r2[] = {0.3f, 0.4f, 0.3f};
+            nk_layout_row(ctx, NK_DYNAMIC, 26, 3, r2);
+            if (nk_button_label(ctx, "back to list"))
+                t->back = 1;
+            nk_labelf(ctx, NK_TEXT_CENTERED, "%.2fx", t->speed);
+            if (nk_button_label(ctx, "fullscreen"))
+                t->toggle_fullscreen = 1;
+            /* row 3: language (Smacker only) */
+            if (t->n_voices > 0) {
+                nk_layout_row_dynamic(ctx, 24, t->n_voices);
+                for (int i = 0; i < t->n_voices; i++) {
+                    int sel = (i == t->active_voice);
+                    if (nk_selectable_label(ctx, i < 4 ? LANG[i] : "L", NK_TEXT_CENTERED, &sel) &&
+                        sel)
+                        t->set_voice = i;
+                }
+            }
+        }
+        nk_end(ctx);
+    }
+    nk_sdl_render(ctx, NK_ANTI_ALIASING_ON); /* draws the bar (or nothing) and clears the frame */
+}

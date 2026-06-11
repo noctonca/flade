@@ -28,4 +28,35 @@ void gui_shutdown(void);
  * return to its list after a movie. */
 gui_choice gui_browse(const char *initial);
 
+/* The playback transport, shared between the play loop and the overlay. The
+ * caller fills the state fields each frame; the overlay reads them to draw, and
+ * writes the request fields, which the caller applies (and which reset next
+ * frame). */
+typedef struct {
+    /* state in */
+    double pos; /* current frame (fractional) */
+    int num_frames;
+    double fps;
+    int paused;
+    double speed;
+    int n_voices; /* SMK language tracks, 0 if none */
+    int active_voice;
+    int visible; /* draw the bar this frame? (auto-hide) */
+    /* requests out */
+    double seek_to;        /* >= 0: jump to this frame */
+    int toggle_pause;      /* 1: flip pause */
+    int set_voice;         /* >= 0: switch language */
+    int back;              /* 1: stop and return to the list */
+    int toggle_fullscreen; /* 1: flip fullscreen */
+} transport_ui;
+
+/* Feed SDL events to the overlay (call around the play loop's event poll). */
+void gui_input_begin(void);
+void gui_input_event(SDL_Event *e);
+void gui_input_end(void);
+
+/* Draw the transport overlay over the current frame (and present nothing - the
+ * caller presents). Reads/writes *t. */
+void gui_overlay(transport_ui *t);
+
 #endif /* FLADE_GUI_H */
