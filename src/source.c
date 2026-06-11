@@ -182,6 +182,42 @@ void source_list_movies(iso9660_t *iso, const char *label) {
     }
 }
 
+typedef struct {
+    source_item *items;
+    int count, cap;
+} movies_ctx;
+
+static void movies_walk_cb(void *ud, const char *path, uint32_t size) {
+    (void)size;
+    movies_ctx *m = (movies_ctx *)ud;
+    if (m->count >= m->cap || !is_movie_path(path))
+        return;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    source_item *it = &m->items[m->count++];
+    snprintf(it->name, sizeof(it->name), "%s", base);
+    snprintf(it->arg, sizeof(it->arg), "%s", path); /* in-image path, leading '/' */
+}
+
+int source_movies(iso9660_t *iso, source_item *items, int cap) {
+    movies_ctx mc = {items, 0, cap};
+    iso_walk(iso, movies_walk_cb, &mc); /* loose .fla / .acf */
+
+    /* VIDEO.HQR cinematics, by catalogue name (resolved later by name) */
+    char vpath[1024];
+    iso_find_basename(iso, "VIDEO.HQR", vpath, sizeof(vpath));
+    if (vpath[0]) {
+        char names[MAX_VIDEO_NAMES][32];
+        int nv = lba2_video_names(iso, names);
+        for (int i = 0; i < nv && mc.count < cap; i++) {
+            source_item *it = &items[mc.count++];
+            snprintf(it->name, sizeof(it->name), "%s", names[i]);
+            snprintf(it->arg, sizeof(it->arg), "%s", names[i]);
+        }
+    }
+    return mc.count;
+}
+
 int source_resolve(iso9660_t *iso, const char *name, char *inpath, size_t cap, int *video_index) {
     find_ctx fc;
     fc.want = name;

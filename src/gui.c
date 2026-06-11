@@ -1,13 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 the flade authors */
-/* The windowed start screen, drawn with Nuklear over SDL3. This is the only
- * translation unit that compiles the vendored GUI toolkit. For now it just
- * lets the user pick a movie (button -> native file dialog, or drag-and-drop)
- * and hands the path back; the player itself is unchanged. */
+/* The windowed start screen, drawn with Nuklear over SDL3 - the only TU that
+ * compiles the vendored GUI toolkit. The user opens a movie file, or opens a CD
+ * image and picks from its list of cinematics; the choice is handed back to the
+ * player. The player itself is unchanged. */
 #include "gui.h"
+#include "iso9660.h"
+#include "source.h"
 
 #include <SDL3/SDL.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ----- Nuklear config (matches tools/gui_spike.c) ------------------------- */
 #define NK_INCLUDE_STANDARD_VARARGS
@@ -71,8 +74,7 @@ static char *nk_flade_dtoa(char *str, double d) {
     return str;
 }
 
-/* the file the dialog / drag-drop produced (the dialog callback may fire on
- * another thread, so guard the handoff) */
+/* the dialog callback may fire on another thread, so guard the handoff */
 struct pick {
     char *path;
     SDL_AtomicInt done;
@@ -86,17 +88,21 @@ static void SDLCALL dialog_cb(void *userdata, const char *const *filelist, int f
     SDL_SetAtomicInt(&p->done, 1);
 }
 
-char *gui_pick_movie(void) {
+#define GUI_MAX_ITEMS 512
+
+gui_choice gui_run(void) {
+    gui_choice result = {NULL, NULL};
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         SDL_Log("flade: SDL_Init failed: %s", SDL_GetError());
-        return NULL;
+        return result;
     }
     SDL_Window *win;
     SDL_Renderer *ren;
-    if (!SDL_CreateWindowAndRenderer("flade", 560, 360, SDL_WINDOW_RESIZABLE, &win, &ren)) {
+    if (!SDL_CreateWindowAndRenderer("flade", 560, 460, SDL_WINDOW_RESIZABLE, &win, &ren)) {
         SDL_Log("flade: window creation failed: %s", SDL_GetError());
         SDL_Quit();
-        return NULL;
+        return result;
     }
     SDL_SetRenderVSync(ren, 1);
     float scale = SDL_GetWindowDisplayScale(win);
@@ -115,21 +121,53 @@ char *gui_pick_movie(void) {
         nk_style_set_font(ctx, &font->handle);
     }
 
+    /* The first filter is the default, so make it everything flade can read - a
+     * disc image, an archive, or a loose movie - which is what the user expects
+     * to see (their movies live inside the .gog / .dot / .bin images). */
     static const SDL_DialogFileFilter filters[] = {
-        {"Adeline movies (fla, acf, smk)", "fla;acf;smk;FLA;ACF;SMK"},
-        {"CD images / archives (gog, dot, hqr, bin, iso)", "gog;dot;hqr;bin;iso;GOG;DOT;HQR"},
+        {"flade files (movies & discs)", "fla;acf;smk;gog;dot;bin;iso;hqr;FLA;ACF;SMK;GOG;DOT;HQR"},
         {"All files", "*"},
     };
 
     struct pick pick;
     pick.path = NULL;
     SDL_SetAtomicInt(&pick.done, 0);
-    int dialog_open = 0;
-    int running = 1;
 
-    while (running && !pick.path) {
-        if (dialog_open && SDL_GetAtomicInt(&pick.done))
-            break; /* the dialog returned a file (or was cancelled) */
+    char *pending = NULL;            /* a path awaiting classification (disc vs loose) */
+    char *disc = NULL;               /* the open CD image (browse state) */
+    char disc_name[128] = {0};       /* its basename, for the heading */
+    static source_item items[GUI_MAX_ITEMS];
+    int n_items = 0;
+    int dialog_open = 0, running = 1;
+
+    while (running) {
+        if (dialog_open && SDL_GetAtomicInt(&pick.done)) {
+            dialog_open = 0;
+            SDL_SetAtomicInt(&pick.done, 0);
+            if (pick.path) {
+                pending = pick.path;
+                pick.path = NULL;
+            }
+        }
+        /* classify a freshly picked/dropped path */
+        if (pending) {
+            iso9660_t *iso = iso_open(pending);
+            if (iso) { /* a CD image -> browse its movies */
+                free(disc);
+                disc = pending;
+                pending = NULL;
+                n_items = source_movies(iso, items, GUI_MAX_ITEMS);
+                iso_close(iso);
+                const char *b = strrchr(disc, '/');
+                snprintf(disc_name, sizeof(disc_name), "%s", b ? b + 1 : disc);
+            } else { /* a loose movie file -> done */
+                result.movie = pending;
+                pending = NULL;
+                running = 0;
+            }
+        }
+        if (!running)
+            break;
 
         nk_input_begin(ctx);
         SDL_Event e;
@@ -138,8 +176,8 @@ char *gui_pick_movie(void) {
                 running = 0;
             else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE)
                 running = 0;
-            else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data)
-                pick.path = SDL_strdup(e.drop.data);
+            else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data && !pending)
+                pending = SDL_strdup(e.drop.data);
             SDL_ConvertEventToRenderCoordinates(ren, &e);
             nk_sdl_handle_event(ctx, &e);
         }
@@ -148,22 +186,51 @@ char *gui_pick_movie(void) {
         int ow, oh;
         SDL_GetRenderOutputSize(ren, &ow, &oh);
         float w = ow / (scale > 0 ? scale : 1), h = oh / (scale > 0 ? scale : 1);
+
         if (nk_begin(ctx, "flade", nk_rect(0, 0, w, h), NK_WINDOW_BORDER)) {
-            nk_layout_row_dynamic(ctx, h * 0.18f, 1);
-            nk_label(ctx, "flade", NK_TEXT_CENTERED);
-            nk_layout_row_dynamic(ctx, 24, 1);
-            nk_label(ctx, "a player for Adeline movies (LBA1 / Time Commando / LBA2)",
-                     NK_TEXT_CENTERED);
-            nk_layout_row_dynamic(ctx, 16, 1);
-            nk_spacing(ctx, 1);
-            nk_layout_row_dynamic(ctx, 44, 1);
-            if (!dialog_open && nk_button_label(ctx, "Open movie or disc...")) {
-                dialog_open = 1;
-                SDL_ShowOpenFileDialog(dialog_cb, &pick, win, filters,
-                                       (int)(sizeof(filters) / sizeof(filters[0])), NULL, false);
+            if (disc) {
+                /* ----- browse a disc's cinematics ----- */
+                nk_layout_row_dynamic(ctx, 28, 1);
+                nk_labelf(ctx, NK_TEXT_LEFT, "%s  -  %d movie%s (click to play)", disc_name,
+                          n_items, n_items == 1 ? "" : "s");
+                nk_layout_row_dynamic(ctx, h - 96, 1);
+                if (nk_group_begin(ctx, "list", NK_WINDOW_BORDER)) {
+                    nk_layout_row_dynamic(ctx, 26, 1);
+                    for (int i = 0; i < n_items; i++) {
+                        if (nk_button_label(ctx, items[i].name)) {
+                            result.cd_path = disc;
+                            disc = NULL; /* ownership moves to result */
+                            result.movie = SDL_strdup(items[i].arg);
+                            running = 0;
+                            break;
+                        }
+                    }
+                    nk_group_end(ctx);
+                }
+                nk_layout_row_dynamic(ctx, 30, 1);
+                if (nk_button_label(ctx, "Open another...")) {
+                    dialog_open = 1;
+                    SDL_ShowOpenFileDialog(dialog_cb, &pick, win, filters,
+                                           (int)(sizeof(filters) / sizeof(filters[0])), NULL, false);
+                }
+            } else {
+                /* ----- start screen ----- */
+                nk_layout_row_dynamic(ctx, h * 0.16f, 1);
+                nk_label(ctx, "flade", NK_TEXT_CENTERED);
+                nk_layout_row_dynamic(ctx, 22, 1);
+                nk_label(ctx, "a player for Adeline movies (LBA1 / Time Commando / LBA2)",
+                         NK_TEXT_CENTERED);
+                nk_layout_row_dynamic(ctx, 16, 1);
+                nk_spacing(ctx, 1);
+                nk_layout_row_dynamic(ctx, 46, 1);
+                if (!dialog_open && nk_button_label(ctx, "Open movie or disc...")) {
+                    dialog_open = 1;
+                    SDL_ShowOpenFileDialog(dialog_cb, &pick, win, filters,
+                                           (int)(sizeof(filters) / sizeof(filters[0])), NULL, false);
+                }
+                nk_layout_row_dynamic(ctx, 22, 1);
+                nk_label(ctx, "...or drag a movie or disc onto this window", NK_TEXT_CENTERED);
             }
-            nk_layout_row_dynamic(ctx, 20, 1);
-            nk_label(ctx, "...or drag a file onto this window", NK_TEXT_CENTERED);
         }
         nk_end(ctx);
 
@@ -174,8 +241,8 @@ char *gui_pick_movie(void) {
         SDL_DelayNS(8 * 1000000);
     }
 
-    char *result = pick.path; /* SDL_strdup'd; caller owns it until exit */
-
+    SDL_free(pending);
+    SDL_free(disc); /* the un-chosen disc, if any (a chosen one moved to result) */
     nk_sdl_shutdown(ctx);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);

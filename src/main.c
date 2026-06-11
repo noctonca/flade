@@ -172,6 +172,18 @@ int main(int argc, char **argv) {
     if (extract_src)
         return run_extract(extract_src, cd_path, movie ? movie : ".");
 
+    /* Bare `flade` (no movie, no disc): open the windowed start screen. The user
+     * picks a movie file, or opens a disc and picks from its list; either way it
+     * falls through to the normal load/play path below (a disc choice sets
+     * cd_path, so this must run before the image is opened). */
+    if (!movie && !cd_path) {
+        gui_choice c = gui_run();
+        if (!c.movie)
+            return 0; /* window closed without a choice */
+        movie = c.movie;
+        cd_path = c.cd_path; /* NULL for a loose movie */
+    }
+
     iso9660_t *iso = NULL;
     if (cd_path) {
         iso = iso_open(cd_path);
@@ -184,15 +196,6 @@ int main(int argc, char **argv) {
             iso_close(iso);
             return 0;
         }
-    }
-
-    /* Bare `flade` (no movie, no disc): open the windowed start screen and let
-     * the user pick something to play. The picked path falls through to the
-     * normal load/play path below. */
-    if (!movie && !cd_path) {
-        movie = gui_pick_movie();
-        if (!movie)
-            return 0; /* window closed without a choice */
     }
 
     if (!movie) {

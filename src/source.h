@@ -18,6 +18,17 @@ uint8_t *read_file(const char *path, size_t *size);
  * (named from the RESS.HQR catalogue). `label` is shown in the heading. */
 void source_list_movies(iso9660_t *iso, const char *label);
 
+/* A playable movie in an image: a display name and the argument to play it with
+ * (a name or in-image path that source_resolve / the player understands). */
+typedef struct {
+    char name[64];
+    char arg[260];
+} source_item;
+
+/* Fill `items` (up to `cap`) with the image's movies - loose .fla/.acf and the
+ * VIDEO.HQR cinematics. Returns the count. */
+int source_movies(iso9660_t *iso, source_item *items, int cap);
+
 /* Resolve a bare movie name within an image to an in-image path (sans leading
  * '/'). On success returns 0 and fills `inpath`; if the name is an LBA2
  * cinematic it also sets `*video_index` to its VIDEO.HQR entry. Returns -1 when

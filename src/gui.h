@@ -5,9 +5,18 @@
 #ifndef FLADE_GUI_H
 #define FLADE_GUI_H
 
-/* Run the start screen: open a window and let the user pick a movie file (or a
- * CD image / HQR) to play. Returns a malloc'd path the caller should play and
- * free, or NULL if the user closed the window without choosing. */
-char *gui_pick_movie(void);
+/* What the start screen produced. `movie` is the argument to play (a loose path,
+ * or a movie name / in-image path within `cd_path`); NULL means the user closed
+ * the window without choosing. `cd_path` is the CD image to play from, or NULL
+ * for a loose file. Both strings (when set) are malloc'd and owned by the
+ * caller (they live until exit). */
+typedef struct {
+    char *cd_path;
+    char *movie;
+} gui_choice;
+
+/* Open the start screen: pick a movie file, or open a disc and pick from its
+ * list of cinematics. */
+gui_choice gui_run(void);
 
 #endif /* FLADE_GUI_H */
