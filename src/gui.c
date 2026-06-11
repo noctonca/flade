@@ -90,36 +90,46 @@ static void SDLCALL dialog_cb(void *userdata, const char *const *filelist, int f
 
 #define GUI_MAX_ITEMS 512
 
-gui_choice gui_run(void) {
+/* one window/renderer/context, owned by main and set up once via gui_init, so
+ * the browser and the player share a single window. */
+static SDL_Window *g_win;
+static SDL_Renderer *g_ren;
+static struct nk_context *g_ctx;
+static float g_scale = 1.0f;
+
+void gui_init(SDL_Window *win, SDL_Renderer *ren) {
+    g_win = win;
+    g_ren = ren;
+    g_scale = SDL_GetWindowDisplayScale(win);
+    if (g_scale <= 0)
+        g_scale = 1.0f;
+    g_ctx = nk_sdl_init(win, ren, nk_sdl_allocator());
+    struct nk_font_atlas *atlas = nk_sdl_font_stash_begin(g_ctx);
+    struct nk_font_config cfg = nk_font_config(0);
+    struct nk_font *font = nk_font_atlas_add_default(atlas, 16 * g_scale, &cfg);
+    nk_sdl_font_stash_end(g_ctx);
+    if (g_scale > 1.0f)
+        font->handle.height /= g_scale;
+    nk_style_set_font(g_ctx, &font->handle);
+}
+
+void gui_shutdown(void) {
+    if (g_ctx)
+        nk_sdl_shutdown(g_ctx);
+    g_ctx = NULL;
+}
+
+/* Browse for something to play. `initial` (or $FLADE_OPEN) is auto-opened on
+ * entry, so returning here after a movie re-shows the same disc's list. */
+gui_choice gui_browse(const char *initial) {
     gui_choice result = {NULL, NULL, -1};
-
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
-        SDL_Log("flade: SDL_Init failed: %s", SDL_GetError());
+    SDL_Window *win = g_win; /* local aliases keep the loop body unchanged */
+    SDL_Renderer *ren = g_ren;
+    struct nk_context *ctx = g_ctx;
+    float scale = g_scale;
+    if (!ctx)
         return result;
-    }
-    SDL_Window *win;
-    SDL_Renderer *ren;
-    if (!SDL_CreateWindowAndRenderer("flade", 560, 460, SDL_WINDOW_RESIZABLE, &win, &ren)) {
-        SDL_Log("flade: window creation failed: %s", SDL_GetError());
-        SDL_Quit();
-        return result;
-    }
-    SDL_SetRenderVSync(ren, 1);
-    float scale = SDL_GetWindowDisplayScale(win);
     SDL_SetRenderScale(ren, scale, scale);
-
-    struct nk_context *ctx = nk_sdl_init(win, ren, nk_sdl_allocator());
-    {
-        struct nk_font_atlas *atlas;
-        struct nk_font_config cfg = nk_font_config(0);
-        struct nk_font *font;
-        atlas = nk_sdl_font_stash_begin(ctx);
-        font = nk_font_atlas_add_default(atlas, 16 * scale, &cfg);
-        nk_sdl_font_stash_end(ctx);
-        if (scale > 1.0f)
-            font->handle.height /= scale;
-        nk_style_set_font(ctx, &font->handle);
-    }
 
     /* The first filter is the default, so make it everything flade can read - a
      * disc image, an archive, or a loose movie - which is what the user expects
@@ -147,7 +157,9 @@ gui_choice gui_run(void) {
     const char *shot_path = getenv("FLADE_SHOT");
     int shot_frames = 0;
     const char *open_env = getenv("FLADE_OPEN");
-    if (open_env)
+    if (initial)
+        pending = SDL_strdup(initial); /* re-show this disc/HQR (back-to-list) */
+    else if (open_env)
         pending = SDL_strdup(open_env);
 
     while (running) {
@@ -275,9 +287,5 @@ gui_choice gui_run(void) {
 
     SDL_free(pending);
     SDL_free(container); /* the un-chosen disc/HQR, if any (a chosen one moved to result) */
-    nk_sdl_shutdown(ctx);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
-    /* leave SDL initialised: the player path re-uses the subsystems */
-    return result;
+    return result;       /* window/context persist; main owns them */
 }

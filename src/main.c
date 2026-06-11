@@ -120,6 +120,19 @@ static void sibling_flasamp(const char *movie, char *out, size_t cap) {
     }
 }
 
+/* Parsed playback options, passed to the player. */
+typedef struct {
+    int no_audio, scale;
+    float volume;
+    const char *flasamp_path, *midi_path, *soundfont_path;
+} player_opts;
+
+/* Load and play one movie in the given (main-owned) window. Returns 0 when the
+ * movie ended or the user asked to go back (Esc), 1 when the user closed the
+ * window (quit the app). */
+static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
+                      int video_index, const player_opts *o);
+
 int main(int argc, char **argv) {
     const char *movie = NULL;
     const char *cd_path = NULL;
@@ -172,39 +185,77 @@ int main(int argc, char **argv) {
     if (extract_src)
         return run_extract(extract_src, cd_path, movie ? movie : ".");
 
-    /* Bare `flade` (no movie, no disc): open the windowed start screen. The user
-     * picks a movie file, or opens a disc and picks from its list; either way it
-     * falls through to the normal load/play path below (a disc choice sets
-     * cd_path, so this must run before the image is opened). */
-    if (!movie && !cd_path) {
-        gui_choice c = gui_run();
-        if (!c.movie)
-            return 0; /* window closed without a choice */
-        movie = c.movie;
-        cd_path = c.cd_path;             /* NULL for a loose movie */
-        if (c.video_index >= 0)          /* a loose movie-HQR entry */
-            video_index = c.video_index; /* used by the HQR-container fallback */
-    }
-
-    iso9660_t *iso = NULL;
-    if (cd_path) {
-        iso = iso_open(cd_path);
-        if (!iso) {
+    /* --list is a CLI-only listing of a disc's movies; no window. */
+    if (do_list && cd_path) {
+        iso9660_t *li = iso_open(cd_path);
+        if (!li) {
             fprintf(stderr, "flade: '%s' is not a CD image I can read\n", cd_path);
             return 1;
         }
-        if (do_list) {
-            source_list_movies(iso, cd_path);
-            iso_close(iso);
-            return 0;
-        }
+        source_list_movies(li, cd_path);
+        iso_close(li);
+        return 0;
     }
 
-    if (!movie) {
-        usage();
-        if (iso)
-            iso_close(iso);
+    /* One window for everything. A movie named on the CLI plays once and exits;
+     * otherwise the start screen / disc list drives playback, and a finished
+     * movie returns to that list. */
+    player_opts opts = {no_audio, scale, volume, flasamp_path, midi_path, soundfont_path};
+    int from_cli = (movie != NULL);
+
+    if (!SDL_Init(SDL_INIT_VIDEO | (no_audio ? 0 : SDL_INIT_AUDIO) | SDL_INIT_EVENTS)) {
+        fprintf(stderr, "flade: SDL_Init failed: %s\n", SDL_GetError());
         return 1;
+    }
+    SDL_Window *win = NULL;
+    SDL_Renderer *ren = NULL;
+    if (!SDL_CreateWindowAndRenderer("flade", 640, 480, SDL_WINDOW_RESIZABLE, &win, &ren)) {
+        fprintf(stderr, "flade: window creation failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+    SDL_SetRenderVSync(ren, 1);
+    gui_init(win, ren);
+
+    const char *cur_movie = movie, *cur_cd = cd_path;
+    int cur_index = video_index;
+    char *last_disc = cd_path ? SDL_strdup(cd_path) : NULL;
+    for (;;) {
+        if (!cur_movie) {
+            gui_choice c = gui_browse(cur_cd ? cur_cd : last_disc);
+            if (!c.movie)
+                break; /* window closed */
+            cur_movie = c.movie;
+            cur_cd = c.cd_path;
+            cur_index = c.video_index >= 0 ? c.video_index : 0;
+            SDL_free(last_disc);
+            last_disc = cur_cd ? SDL_strdup(cur_cd) : NULL;
+        }
+        int quit_app = run_player(win, ren, cur_movie, cur_cd, cur_index, &opts);
+        if (from_cli || quit_app)
+            break;
+        cur_movie = NULL;
+        cur_cd = NULL;
+        cur_index = 0; /* back to the browse list */
+    }
+    SDL_free(last_disc);
+    gui_shutdown();
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    return 0;
+}
+
+static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
+                      int video_index, const player_opts *o) {
+    const int no_audio = o->no_audio, scale = o->scale;
+    const float volume = o->volume;
+    const char *flasamp_path = o->flasamp_path, *midi_path = o->midi_path,
+               *soundfont_path = o->soundfont_path;
+    iso9660_t *iso = cd_path ? iso_open(cd_path) : NULL;
+    if (cd_path && !iso) {
+        fprintf(stderr, "flade: '%s' is not a CD image I can read\n", cd_path);
+        return 0;
     }
 
     /* ----- load the movie bytes ------------------------------------------- */
@@ -219,12 +270,12 @@ int main(int argc, char **argv) {
         } else if (source_resolve(iso, movie, inpath, sizeof(inpath), &video_index) != 0) {
             fprintf(stderr, "flade: no movie matching '%s' in image (try --list)\n", movie);
             iso_close(iso);
-            return 1;
+            return 0;
         }
         if (iso_read(iso, inpath, &movie_buf, &movie_size) != 0) {
             fprintf(stderr, "flade: '/%s' not found in image\n", inpath);
             iso_close(iso);
-            return 1;
+            return 0;
         }
         /* FLASAMP.HQR (FLA samples) lives in the same directory as the movie */
         const char *sl = strrchr(inpath, '/');
@@ -249,7 +300,7 @@ int main(int argc, char **argv) {
         movie_buf = read_file(movie, &movie_size);
         if (!movie_buf) {
             fprintf(stderr, "flade: cannot open '%s'\n", movie);
-            return 1;
+            return 0;
         }
     }
 
@@ -271,7 +322,7 @@ int main(int argc, char **argv) {
             free(movie_buf);
             if (iso)
                 iso_close(iso);
-            return 1;
+            return 0;
         }
     }
     printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv.width, mv.height,
@@ -290,29 +341,10 @@ int main(int argc, char **argv) {
                voices.count == 1 ? "" : "s", voices.count);
     }
 
-    /* ----- SDL setup ------------------------------------------------------ */
-    Uint32 init_flags = SDL_INIT_VIDEO | (no_audio ? 0 : SDL_INIT_AUDIO);
-    if (!SDL_Init(init_flags)) {
-        fprintf(stderr, "flade: SDL_Init failed: %s\n", SDL_GetError());
-        mv.close(&mv);
-        free(movie_buf);
-        if (iso)
-            iso_close(iso);
-        return 1;
-    }
-
-    SDL_Window *win = NULL;
-    SDL_Renderer *ren = NULL;
-    if (!SDL_CreateWindowAndRenderer("flade", mv.width * scale, mv.height * scale,
-                                     SDL_WINDOW_RESIZABLE, &win, &ren)) {
-        fprintf(stderr, "flade: window creation failed: %s\n", SDL_GetError());
-        SDL_Quit();
-        mv.close(&mv);
-        free(movie_buf);
-        if (iso)
-            iso_close(iso);
-        return 1;
-    }
+    /* ----- per-movie SDL setup (the window is main's) --------------------- */
+    SDL_SetRenderScale(ren, 1.0f, 1.0f); /* GUI left a UI scale; video draws 1:1 */
+    if (!(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN))
+        SDL_SetWindowSize(win, mv.width * scale, mv.height * scale);
     SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                          SDL_TEXTUREACCESS_STREAMING, mv.width, mv.height);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
@@ -397,6 +429,7 @@ int main(int argc, char **argv) {
     int dir = 1;        /* +1 forward, -1 reverse */
     int paused = 0;
     int quit = 0;
+    int quit_app = 0; /* return value: 1 = user closed the window (exit the app) */
     int have_frame = 0;
     int was_audio_active = 0; /* ACF stream was playing last iteration */
     int seeked = 0;           /* a key jumped the playhead this frame */
@@ -462,11 +495,12 @@ int main(int argc, char **argv) {
                     midi_fading = 1;
             }
         } else if (player_complete(pl) && player_count(pl) > 0) {
-            /* reached the end: hold on the last frame (rewind still works) */
+            /* played to the end: show the last frame, then return - the top loop
+             * goes back to the browse list (or exits, for a CLI play) */
             idx = player_count(pl) - 1;
             pos = (double)idx;
-            paused = 1;
             have_frame = player_get(pl, idx, &fr);
+            quit = 1;
         } else if (!have_frame) {
             fprintf(stderr, "flade: no frames decoded\n");
             break;
@@ -566,6 +600,7 @@ int main(int argc, char **argv) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_EVENT_QUIT) {
                 quit = 1;
+                quit_app = 1; /* closing the window exits flade, not just the movie */
             } else if (e.type == SDL_EVENT_KEY_DOWN) {
                 switch (e.key.key) {
                 case SDLK_ESCAPE:
@@ -670,12 +705,9 @@ int main(int argc, char **argv) {
         free(bank.hqr);
     }
     SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
-    SDL_Quit();
     mv.close(&mv);
     free(movie_buf);
     if (iso)
         iso_close(iso);
-    return 0;
+    return quit_app; /* window/renderer/SDL are main's */
 }
