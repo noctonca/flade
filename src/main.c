@@ -368,9 +368,6 @@ int main(int argc, char **argv) {
                     have_midi = 1;
                 free(xmi);
             }
-        } else if (mh && !midi_available()) {
-            fprintf(stderr, "flade: found MIDI_MI.HQR but no soundfont; "
-                            "pass --soundfont <.sf2> for cutscene music\n");
         }
         free(mh);
     }

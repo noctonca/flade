@@ -17,6 +17,8 @@
 #define TML_IMPLEMENTATION
 #include "tml.h"
 
+#include "flute_sf2.h" /* the bundled cutscene-flute soundfont */
+
 static tsf *g_sf;
 
 /* Distro/macOS "default GM" locations, tried when no explicit font is given. */
@@ -35,7 +37,11 @@ int midi_init(const char *sf2_path) {
         return 0;
     if (sf2_path) {
         g_sf = tsf_load_filename(sf2_path);
+        if (!g_sf)
+            fprintf(stderr, "flade: couldn't load soundfont '%s'; using the bundled flute\n",
+                    sf2_path);
     } else {
+        /* Prefer a real system GM font if one is installed (richer). */
         for (int i = 0; DEFAULT_SF2[i] && !g_sf; i++) {
             FILE *f = fopen(DEFAULT_SF2[i], "rb");
             if (f) {
@@ -44,6 +50,10 @@ int midi_init(const char *sf2_path) {
             }
         }
     }
+    /* Always fall back to the bundled flute so the cutscene never goes silent
+     * for want of a soundfont. */
+    if (!g_sf)
+        g_sf = tsf_load_memory(flute_sf2, (int)flute_sf2_len);
     return g_sf ? 0 : -1;
 }
 
