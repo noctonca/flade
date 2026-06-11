@@ -249,41 +249,50 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
-                      int video_index, int has_list, const player_opts *o) {
-    const int no_audio = o->no_audio, scale = o->scale;
-    const float volume = o->volume;
-    const char *flasamp_path = o->flasamp_path, *midi_path = o->midi_path,
-               *soundfont_path = o->soundfont_path;
-    iso9660_t *iso = cd_path ? iso_open(cd_path) : NULL;
-    if (cd_path && !iso) {
+/* The decoded movie plus the bits the player needs to free or read alongside
+ * it (the CD image, and the sibling HQRs found next to an in-image movie). */
+typedef struct {
+    uint8_t *buf;    /* the movie bytes the decoder references */
+    iso9660_t *iso;  /* the open CD image, or NULL for a loose file */
+    char flasamp_in_image[1024]; /* FLASAMP.HQR beside an in-image FLA */
+    char midi_in_image[1024];    /* MIDI_MI.HQR one directory up from it */
+} loaded_movie;
+
+/* Open `movie` (a loose file, or a name / in-image path within `cd_path`) into
+ * `*mv` and `*lm`. On failure sets a start-screen status and returns -1 (having
+ * freed/closed whatever it opened). */
+static int load_movie(const char *movie, const char *cd_path, int video_index, movie_t *mv,
+                      loaded_movie *lm) {
+    memset(lm, 0, sizeof(*lm));
+    lm->iso = cd_path ? iso_open(cd_path) : NULL;
+    if (cd_path && !lm->iso) {
         fprintf(stderr, "flade: '%s' is not a CD image I can read\n", cd_path);
-        return 0;
+        gui_set_status("couldn't open that disc image");
+        return -1;
     }
 
-    /* ----- load the movie bytes ------------------------------------------- */
-    uint8_t *movie_buf = NULL;
-    size_t movie_size = 0;
-    char flasamp_in_image[1024] = {0}; /* FLASAMP.HQR beside an in-image FLA */
-    char midi_in_image[1024] = {0};    /* MIDI_MI.HQR one level up from it */
-    if (iso) {
+    size_t size = 0;
+    if (lm->iso) {
         char inpath[1024];
         if (movie[0] == '/') {
             snprintf(inpath, sizeof(inpath), "%s", movie + 1); /* strip leading '/' */
-        } else if (source_resolve(iso, movie, inpath, sizeof(inpath), &video_index) != 0) {
+        } else if (source_resolve(lm->iso, movie, inpath, sizeof(inpath), &video_index) != 0) {
             fprintf(stderr, "flade: no movie matching '%s' in image (try --list)\n", movie);
-            iso_close(iso);
-            return 0;
+            gui_set_status("couldn't find that movie on the disc");
+            iso_close(lm->iso);
+            return -1;
         }
-        if (iso_read(iso, inpath, &movie_buf, &movie_size) != 0) {
+        if (iso_read(lm->iso, inpath, &lm->buf, &size) != 0) {
             fprintf(stderr, "flade: '/%s' not found in image\n", inpath);
-            iso_close(iso);
-            return 0;
+            gui_set_status("couldn't read that movie from the disc");
+            iso_close(lm->iso);
+            return -1;
         }
         /* FLASAMP.HQR (FLA samples) lives in the same directory as the movie */
         const char *sl = strrchr(inpath, '/');
         size_t dl = sl ? (size_t)(sl - inpath) + 1 : 0;
-        snprintf(flasamp_in_image, sizeof(flasamp_in_image), "%.*sFLASAMP.HQR", (int)dl, inpath);
+        snprintf(lm->flasamp_in_image, sizeof(lm->flasamp_in_image), "%.*sFLASAMP.HQR", (int)dl,
+                 inpath);
         /* MIDI_MI.HQR sits one directory up (e.g. LBA/MIDI_MI.HQR for LBA/FLA/X.FLA) */
         char tmp[1024];
         snprintf(tmp, sizeof(tmp), "%s", inpath);
@@ -298,28 +307,26 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         } else {
             tmp[0] = 0;
         }
-        snprintf(midi_in_image, sizeof(midi_in_image), "%sMIDI_MI.HQR", tmp);
+        snprintf(lm->midi_in_image, sizeof(lm->midi_in_image), "%sMIDI_MI.HQR", tmp);
     } else {
-        movie_buf = read_file(movie, &movie_size);
-        if (!movie_buf) {
+        lm->buf = read_file(movie, &size);
+        if (!lm->buf) {
             fprintf(stderr, "flade: cannot open '%s'\n", movie);
             gui_set_status("couldn't open that file");
-            return 0;
+            return -1;
         }
     }
 
-    movie_t mv;
-    if (movie_open(&mv, movie_buf, movie_size, movie) != 0) {
-        /* Not a bare movie - maybe an HQR container of movies (LBA2's
-         * VIDEO.HQR holds one .smk per entry). Play entry `video_index`. */
+    if (movie_open(mv, lm->buf, size, movie) != 0) {
+        /* Not a bare movie - maybe an HQR container of movies (LBA2's VIDEO.HQR
+         * holds one .smk per entry). Play entry `video_index`. */
         uint8_t *entry = NULL;
         size_t esize = 0;
-        if (hqr_count(movie_buf, movie_size) > 0 &&
-            hqr_entry(movie_buf, movie_size, video_index, &entry, &esize) == 0 &&
-            movie_open(&mv, entry, esize, movie) == 0) {
-            free(movie_buf); /* the movie now references the decoded entry */
-            movie_buf = entry;
-            movie_size = esize;
+        if (hqr_count(lm->buf, size) > 0 &&
+            hqr_entry(lm->buf, size, video_index, &entry, &esize) == 0 &&
+            movie_open(mv, entry, esize, movie) == 0) {
+            free(lm->buf); /* the movie now references the decoded entry */
+            lm->buf = entry;
         } else {
             free(entry);
             fprintf(stderr, "flade: '%s' is not a movie I can play\n", movie);
@@ -327,14 +334,33 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
             const char *b = strrchr(movie, '/');
             snprintf(msg, sizeof(msg), "'%s' isn't a movie flade can play", b ? b + 1 : movie);
             gui_set_status(msg);
-            free(movie_buf);
-            if (iso)
-                iso_close(iso);
-            return 0;
+            free(lm->buf);
+            if (lm->iso)
+                iso_close(lm->iso);
+            return -1;
         }
     }
-    printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv.width, mv.height,
-           mv.num_frames, mv.fps);
+    printf("flade: %s  %dx%d  %d frames  %.0f fps\n", movie, mv->width, mv->height, mv->num_frames,
+           mv->fps);
+    return 0;
+}
+
+static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, const char *cd_path,
+                      int video_index, int has_list, const player_opts *o) {
+    const int no_audio = o->no_audio, scale = o->scale;
+    const float volume = o->volume;
+    const char *flasamp_path = o->flasamp_path, *midi_path = o->midi_path,
+               *soundfont_path = o->soundfont_path;
+
+    movie_t mv;
+    loaded_movie lm;
+    if (load_movie(movie, cd_path, video_index, &mv, &lm) != 0)
+        return 0; /* load failed (status already set); back to the browser */
+    uint8_t *movie_buf = lm.buf;
+    iso9660_t *iso = lm.iso;
+    const char *flasamp_in_image = lm.flasamp_in_image;
+    const char *midi_in_image = lm.midi_in_image;
+
     /* window title: the movie's name */
     {
         const char *b = strrchr(movie, '/');
@@ -612,7 +638,13 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         SDL_RenderClear(ren);
         SDL_RenderTexture(ren, tex, NULL, &dst);
 
-        /* input / transport: keyboard plus the overlay's mouse */
+        /* input: the keyboard and the overlay both write requests into `t`,
+         * applied together below so the two share one code path. Trick-mode keys
+         * (reverse / step / speed / restart) have no overlay control, so they act
+         * inline. */
+        transport_ui t = {0};
+        t.seek_to = -1.0;
+        t.set_voice = -1;
         gui_input_begin();
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -626,44 +658,31 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                 case SDLK_ESCAPE:
                 case SDLK_Q:
                 case SDLK_RETURN:
-                    quit = 1;
+                    t.back = 1;
                     break;
-                case SDLK_SPACE: /* pause / play */
-                    paused = !paused;
-                    if (paused)
-                        audio_stop_all();
+                case SDLK_SPACE:
+                    t.toggle_pause = 1;
                     break;
                 case SDLK_1:
                 case SDLK_2:
                 case SDLK_3:
-                case SDLK_4: { /* switch SMK voice (language) live */
-                    int vi = (int)(e.key.key - SDLK_1);
-                    if (have_voices && vi < voices.count && vi != active_voice) {
-                        active_voice = vi;
-                        if (was_audio_active) { /* swap the voice channel only; music plays on */
-                            size_t sf = (size_t)((double)(int)pos / mv.fps * voices.rate);
-                            audio_voice_start(voices.pcm[vi], voices.frames, voices.rate,
-                                              voices.channels, sf, volume);
-                            audio_voice_set_paused(paused);
-                        }
-                    }
+                case SDLK_4:
+                    t.set_voice = (int)(e.key.key - SDLK_1);
                     break;
-                }
+                case SDLK_LEFT: /* seek back ~5s */
+                    t.seek_to = pos - 5.0 * mv.fps;
+                    if (t.seek_to < 0)
+                        t.seek_to = 0;
+                    break;
+                case SDLK_RIGHT: /* seek forward ~5s */
+                    t.seek_to = pos + 5.0 * mv.fps;
+                    break;
+                case SDLK_F:
+                    t.toggle_fullscreen = 1;
+                    break;
                 case SDLK_R: /* reverse direction */
                     dir = -dir;
                     audio_stop_all();
-                    break;
-                case SDLK_LEFT: /* seek back ~5s */
-                    pos -= 5.0 * mv.fps;
-                    if (pos < 0.0)
-                        pos = 0.0;
-                    audio_stop_all();
-                    seeked = 1;
-                    break;
-                case SDLK_RIGHT: /* seek forward ~5s */
-                    pos += 5.0 * mv.fps;
-                    audio_stop_all();
-                    seeked = 1;
                     break;
                 case SDLK_COMMA: /* step one frame back */
                     paused = 1;
@@ -695,11 +714,6 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
                     audio_stop_all();
                     seeked = 1;
                     break;
-                case SDLK_F: {
-                    bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
-                    SDL_SetWindowFullscreen(win, !fs);
-                    break;
-                }
                 default:
                     break;
                 }
@@ -709,7 +723,6 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         gui_input_end();
 
         /* transport overlay - shows on mouse activity, hides ~2.5s after */
-        transport_ui t = {0};
         t.pos = pos;
         t.num_frames = mv.num_frames;
         t.fps = mv.fps;
@@ -718,10 +731,10 @@ static int run_player(SDL_Window *win, SDL_Renderer *ren, const char *movie, con
         t.n_voices = have_voices ? voices.count : 0;
         t.active_voice = active_voice;
         t.has_list = has_list;
-        t.seek_to = -1.0;
-        t.set_voice = -1;
         t.visible = paused || (SDL_GetTicksNS() - last_input_ns) < 2500000000ULL;
         gui_overlay(&t);
+
+        /* apply transport requests from the keyboard or the overlay, in one place */
         if (t.toggle_pause) {
             paused = !paused;
             if (paused)
